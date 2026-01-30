@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    if 1 or args.generate_vscode_settings:
+    if args.generate_vscode_settings:
 
         # find the isaaclab installation root
         current = Path(__file__).resolve()
