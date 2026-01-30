@@ -1,5 +1,4 @@
-# Copyright (c) 2022-2026, The Isaac Lab Project Developers
-# (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -75,8 +74,8 @@ def main(argv: list[str] | None = None) -> int:
 
         module.main()
         print(
-            "Successfully generated VSCode settings and launch configs at " 
-                f"{isaaclab_install_path / '.vscode'}") 
+            "Successfully generated VSCode settings and launch configs at "
+                f"{isaaclab_install_path / '.vscode'}")
         return 0
 
     # parse arguments with help to show usage
