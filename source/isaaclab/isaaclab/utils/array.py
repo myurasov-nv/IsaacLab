@@ -12,9 +12,18 @@ from typing import Union
 
 import numpy as np
 import torch
-import warp as wp
 
-TensorData = Union[np.ndarray, torch.Tensor, wp.array]  # noqa: UP007
+try:
+    import warp as wp
+
+    _HAS_WARP = True
+except ImportError:
+    _HAS_WARP = False
+
+if _HAS_WARP:
+    TensorData = Union[np.ndarray, torch.Tensor, wp.array]  # noqa: UP007
+else:
+    TensorData = Union[np.ndarray, torch.Tensor]  # noqa: UP007
 """Type definition for a tensor data.
 
 Union of numpy, torch, and warp arrays.
@@ -23,7 +32,6 @@ Union of numpy, torch, and warp arrays.
 TENSOR_TYPES = {
     "numpy": np.ndarray,
     "torch": torch.Tensor,
-    "warp": wp.array,
 }
 """A dictionary containing the types for each backend.
 
@@ -32,15 +40,20 @@ The keys are the name of the backend ("numpy", "torch", "warp") and the values a
 """
 
 TENSOR_TYPE_CONVERSIONS = {
-    "numpy": {wp.array: lambda x: x.numpy(), torch.Tensor: lambda x: x.detach().cpu().numpy()},
-    "torch": {wp.array: lambda x: wp.torch.to_torch(x), np.ndarray: lambda x: torch.from_numpy(x)},
-    "warp": {np.array: lambda x: wp.array(x), torch.Tensor: lambda x: wp.torch.from_torch(x)},
+    "numpy": {torch.Tensor: lambda x: x.detach().cpu().numpy()},
+    "torch": {np.ndarray: lambda x: torch.from_numpy(x)},
 }
 """A nested dictionary containing the conversion functions for each backend.
 
 The keys of the outer dictionary are the name of target backend ("numpy", "torch", "warp"). The keys of the
 inner dictionary are the source backend (``np.ndarray``, ``torch.Tensor``, ``wp.array``).
 """
+
+if _HAS_WARP:
+    TENSOR_TYPES["warp"] = wp.array
+    TENSOR_TYPE_CONVERSIONS["numpy"][wp.array] = lambda x: x.numpy()
+    TENSOR_TYPE_CONVERSIONS["torch"][wp.array] = lambda x: wp.torch.to_torch(x)
+    TENSOR_TYPE_CONVERSIONS["warp"] = {np.array: lambda x: wp.array(x), torch.Tensor: lambda x: wp.torch.from_torch(x)}
 
 
 def convert_to_torch(
@@ -79,7 +92,7 @@ def convert_to_torch(
             array = array.astype(np.int32)
         # need to deal with object arrays (np.void) separately
         tensor = torch.from_numpy(array)
-    elif isinstance(array, wp.array):
+    elif _HAS_WARP and isinstance(array, wp.array):
         if array.dtype == wp.uint32:
             array = array.view(wp.int32)
         tensor = wp.to_torch(array)
