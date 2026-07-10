@@ -3,15 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Launch Isaac Sim Simulator first."""
-
-from isaaclab.app import AppLauncher
-
-# launch omniverse app
-simulation_app = AppLauncher(headless=True).app
-
-"""Rest everything follows."""
-
 import importlib
 import json
 
@@ -35,6 +26,8 @@ from isaaclab.devices import (
     Se3SpaceMouse,
     Se3SpaceMouseCfg,
 )
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture

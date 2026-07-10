@@ -82,7 +82,7 @@ This guide demonstrates how to estimate the number of cameras one can run on the
 Configure Rendering
 -------------------
 
-This guide demonstrates how to select rendering mode presets and overwrite preset rendering settings.
+This guide demonstrates how to customize the RTX rendering settings.
 
 .. toctree::
     :maxdepth: 1
@@ -99,6 +99,29 @@ Isaac Lab.
     :maxdepth: 1
 
     draw_markers
+
+
+Using Visualizers
+-----------------
+
+This guide demonstrates how to use visualizer-specific views for monitoring and debugging Isaac Lab environments.
+
+.. toctree::
+    :maxdepth: 1
+
+    visualizer_tiled_camera
+
+
+Working with Simulation Data
+----------------------------
+
+This guide explains how to read and write simulation state using the :class:`~isaaclab.utils.warp.ProxyArray`
+dual-access wrapper that all data classes return.
+
+.. toctree::
+    :maxdepth: 1
+
+    proxy_array
 
 
 Interfacing with Environments
@@ -123,6 +146,7 @@ This guide explains how to record an animation and video in Isaac Lab.
 
     record_animation
     record_video
+    capture_sensor_frames
 
 
 Dynamically Modifying Environment Parameters With CurriculumTerm
@@ -195,3 +219,14 @@ This guide explains 2 features that can speed up stage initialization, **fabric 
     :maxdepth: 1
 
     optimize_stage_creation
+
+
+Profiling Isaac Lab with Nsight Systems
+---------------------------------------
+
+This guide explains how to profile Isaac Lab tasks with NVIDIA Nsight Systems for runtime performance analysis.
+
+.. toctree::
+    :maxdepth: 1
+
+    profile_with_nsys

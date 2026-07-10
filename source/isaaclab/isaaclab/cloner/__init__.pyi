@@ -4,24 +4,46 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 __all__ = [
-    "TemplateCloneCfg",
-    "random",
-    "sequential",
-    "clone_from_template",
+    "CloneCfg",
+    "ClonePlan",
+    "disabled_fabric_change_notifies",
     "filter_collisions",
+    "get_suffix",
     "grid_transforms",
+    "iter_clone_plan_matches",
     "make_clone_plan",
-    "resolve_visualizer_clone_fn",
+    "random",
+    "ReplicateSession",
+    "REPLICATION_QUEUE",
+    "replicate",
+    "resolve_clone_plan_source",
+    "split_clone_template",
+    "queue_usd_replication",
+    "sequential",
+    "UsdReplicateContext",
     "usd_replicate",
 ]
 
-from .cloner_cfg import TemplateCloneCfg
+from .clone_plan import ClonePlan
+from .cloner_cfg import CloneCfg
 from .cloner_strategies import random, sequential
+from ._fabric_notices import disabled_fabric_change_notifies
 from .cloner_utils import (
-    clone_from_template,
     filter_collisions,
+    get_suffix,
     grid_transforms,
+    iter_clone_plan_matches,
     make_clone_plan,
-    resolve_visualizer_clone_fn,
+    resolve_clone_plan_source,
+    split_clone_template,
+)
+from .replicate_session import (
+    REPLICATION_QUEUE,
+    ReplicateSession,
+    replicate,
+)
+from .usd import (
+    UsdReplicateContext,
+    queue_usd_replication,
     usd_replicate,
 )

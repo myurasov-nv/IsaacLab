@@ -9,6 +9,8 @@ import pytest
 
 from isaaclab.app import AppLauncher
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.usefixtures("mocker")
 def test_livestream_launch_with_argparser(mocker):
@@ -54,9 +56,10 @@ def test_headless_deprecated_arg_parsing():
     assert args.headless_explicit is True
 
 
-def test_visualizer_none_parsing():
+@pytest.mark.parametrize("value", ["none", "None"])
+def test_visualizer_none_parsing(value: str):
     parser = argparse.ArgumentParser()
     AppLauncher.add_app_launcher_args(parser)
-    args = parser.parse_args(["--viz", "none"])
-    assert args.visualizer == ["none"]
+    args = parser.parse_args(["--viz", value])
+    assert args.visualizer is None
     assert args.visualizer_explicit is True

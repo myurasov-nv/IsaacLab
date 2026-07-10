@@ -5,8 +5,10 @@
 
 """Configuration for Newton Warp Renderer."""
 
+from typing import Literal
+
 from isaaclab.renderers.renderer_cfg import RendererCfg
-from isaaclab.utils import configclass
+from isaaclab.utils.configclass import configclass
 
 
 @configclass
@@ -15,3 +17,36 @@ class NewtonWarpRendererCfg(RendererCfg):
 
     renderer_type: str = "newton_warp"
     """Type identifier for Newton Warp renderer."""
+
+    enable_textures: bool = True
+    """Enable texture-mapped rendering for meshes."""
+
+    enable_shadows: bool = False
+    """Enable shadow rays for directional lights."""
+
+    enable_ambient_lighting: bool = True
+    """Enable ambient lighting for the scene."""
+
+    enable_backface_culling: bool = True
+    """Cull back-facing triangles."""
+
+    max_distance: float = 1000.0
+    """Maximum ray distance [m]."""
+
+    create_default_light: bool = True
+    """Create a default directional light source in the scene."""
+
+    colorize_instance_segmentation: bool = True
+    """Expose ``instance_segmentation_fast`` as ``(N, H, W, 4) uint8`` if True, else ``(N, H, W, 1) int32``."""
+
+    render_order: Literal["pixel_priority", "view_priority", "tiled"] = "tiled"
+    """Render traversal order for the Newton tiled camera."""
+
+    tile_rendering_width: int = 8
+    """Tile width [px] for tiled rendering."""
+
+    tile_rendering_height: int = 8
+    """Tile height [px] for tiled rendering."""
+
+    kernel_block_dim: int = 64
+    """Thread block dimension forwarded to Newton."""

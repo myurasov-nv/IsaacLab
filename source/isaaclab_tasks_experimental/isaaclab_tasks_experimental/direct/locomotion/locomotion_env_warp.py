@@ -9,6 +9,7 @@ import warp as wp
 from isaaclab_experimental.envs import DirectRLEnvWarp
 
 import isaaclab.sim as sim_utils
+from isaaclab import cloner
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnvCfg
 
@@ -359,11 +360,11 @@ class LocomotionWarpEnv(DirectRLEnvWarp):
 
         # Simulation bindings
         # Note: these are direct memory views into the Newton simulation data, they should not be modified directly
-        self.joint_pos = self.robot.data.joint_pos
-        self.joint_vel = self.robot.data.joint_vel
-        self.root_pose_w = self.robot.data.root_pose_w
-        self.root_vel_w = self.robot.data.root_vel_w
-        self.soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits
+        self.joint_pos = self.robot.data.joint_pos.warp
+        self.joint_vel = self.robot.data.joint_vel.warp
+        self.root_pose_w = self.robot.data.root_pose_w.warp
+        self.root_vel_w = self.robot.data.root_vel_w.warp
+        self.soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits.warp
 
         # Buffers
         self.observations = wp.zeros(
@@ -415,8 +416,10 @@ class LocomotionWarpEnv(DirectRLEnvWarp):
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self.terrain = self.cfg.terrain.class_type(self.cfg.terrain)
-        # clone and replicate
-        self.scene.clone_environments(copy_from_source=False)
+        src, dest = "/World/envs/env_0", "/World/envs/env_{}"
+        pos = cloner.grid_transforms(self.scene.num_envs, self.scene.cfg.env_spacing, device=self.device)[0]
+        plan = cloner.ClonePlan.from_env_0(src, dest, self.scene.num_envs, self.device, pos)
+        cloner.replicate(plan, stage=self.scene.stage)
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
         # add lights
@@ -548,8 +551,8 @@ class LocomotionWarpEnv(DirectRLEnvWarp):
             reset_root,
             dim=self.num_envs,
             inputs=[
-                self.robot.data.default_root_pose,
-                self.robot.data.default_root_vel,
+                self.robot.data.default_root_pose.warp,
+                self.robot.data.default_root_vel.warp,
                 self.env_origins,
                 self.cfg.sim.dt,
                 self.targets,
@@ -564,8 +567,8 @@ class LocomotionWarpEnv(DirectRLEnvWarp):
             reset_joints,
             dim=(self.num_envs, self.robot.num_joints),
             inputs=[
-                self.robot.data.default_joint_pos,
-                self.robot.data.default_joint_vel,
+                self.robot.data.default_joint_pos.warp,
+                self.robot.data.default_joint_vel.warp,
                 self.joint_pos,
                 self.joint_vel,
                 mask,

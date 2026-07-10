@@ -4,10 +4,17 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import argparse
+import sys
+from pathlib import Path
 
 from .commands.envs import command_setup_conda, command_setup_uv
 from .commands.format import command_format
-from .commands.install import VALID_ISAACLAB_SUBMODULES, VALID_RL_FRAMEWORKS, command_install
+from .commands.install import (
+    CORE_ISAACLAB_SUBMODULES,
+    OPTIONAL_ISAACLAB_SUBMODULES,
+    VALID_EXTRA_FEATURES,
+    command_install,
+)
 from .commands.misc import (
     command_build_docs,
     command_new,
@@ -17,41 +24,130 @@ from .commands.misc import (
     command_vscode_settings,
 )
 from .utils import (
+    ISAACLAB_ROOT,
     is_windows,
     run_python_command,
 )
 
 
-def cli() -> None:
-    """Parse CLI arguments and run the requested command."""
-    parser = argparse.ArgumentParser(
-        description="Isaac Lab CLI",
-        prog="isaaclab" + (".bat" if is_windows() else ".sh"),
-        formatter_class=argparse.RawTextHelpFormatter,
+def train(args: list[str] | None = None) -> None:
+    """Run the unified reinforcement learning training script."""
+    if args is None:
+        args = sys.argv[1:]
+    run_python_command(ISAACLAB_ROOT / "scripts" / "reinforcement_learning" / "train.py", args, check=True)
+
+
+def train_multigpu(args: list[str] | None = None) -> None:
+    """Run the unified multi-GPU reinforcement learning training script."""
+    if args is None:
+        args = sys.argv[1:]
+    run_python_command(
+        ISAACLAB_ROOT / "scripts" / "reinforcement_learning" / "train_multigpu.py", args, check=True
     )
 
-    _submodules_str = ", ".join(sorted(VALID_ISAACLAB_SUBMODULES))
-    _frameworks_str = ", ".join(sorted(VALID_RL_FRAMEWORKS))
+
+def play(args: list[str] | None = None) -> None:
+    """Run the unified reinforcement learning play script."""
+    if args is None:
+        args = sys.argv[1:]
+    run_python_command(ISAACLAB_ROOT / "scripts" / "reinforcement_learning" / "play.py", args, check=True)
+
+
+def benchmark(args: list[str] | None = None) -> None:
+    """Run a runtime, startup, training, or play benchmark.
+
+    Args:
+        args: Command-line arguments. Uses ``sys.argv`` when omitted.
+    """
+    parser = argparse.ArgumentParser(description="Run an Isaac Lab benchmark.")
+    parser.add_argument("command", choices=("runtime", "startup", "training", "play"), help="Benchmark workflow to run.")
+    if args is None:
+        args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        parser.parse_args(args)
+    parsed_args = parser.parse_args(args[:1])
+    run_python_command(
+        ISAACLAB_ROOT / "scripts" / "benchmarks" / f"{parsed_args.command}.py", args[1:], check=True
+    )
+
+
+def cli() -> None:
+    """Parse CLI arguments and run the requested command."""
+    if len(sys.argv) > 1 and sys.argv[1] == "benchmark":
+        benchmark(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "train":
+        train(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "train_multigpu":
+        train_multigpu(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "play":
+        play(sys.argv[2:])
+        return
+
+    executable_name = Path(sys.argv[0]).name
+    default_prog = "isaaclab.bat" if is_windows() else "isaaclab.sh"
+    parser = argparse.ArgumentParser(
+        description="Isaac Lab CLI",
+        prog=executable_name if executable_name != "__main__.py" else default_prog,
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "commands:\n"
+            "  benchmark       Run a runtime, startup, training, or play benchmark\n"
+            "  train           Run scripts/reinforcement_learning/train.py\n"
+            "  train_multigpu  Run scripts/reinforcement_learning/train_multigpu.py\n"
+            "  play            Run scripts/reinforcement_learning/play.py"
+        ),
+    )
+
+    _optional_str = ", ".join(sorted(OPTIONAL_ISAACLAB_SUBMODULES))
+    _extras_str = ", ".join(sorted(VALID_EXTRA_FEATURES))
+    _core_str = ", ".join(CORE_ISAACLAB_SUBMODULES)
     parser.add_argument(
         "-i",
         "--install",
         nargs="?",
         const="all",
         help=(
-            "Install Isaac Lab submodules and RL frameworks.\n"
-            "Accepts a comma-separated list of submodule names, one of the RL frameworks, or a special value.\n"
+            "Install Isaac Lab submodules and optional extra dependencies.\n"
             "\n"
-            f"* Isaac Lab submodules: {_submodules_str}\n"
-            "  Any submodule accepts an editable selector, e.g. visualizers[all|kit|newton|rerun|viser], rl[rsl_rl|skrl].\n"
+            "All core submodules are always installed:\n"
+            f"  {_core_str}\n"
             "\n"
-            f"* RL frameworks: {_frameworks_str}\n"
-            "  Passing an RL framework name installs all Isaac Lab submodules + that framework.\n"
-            "  On Linux/macOS, quote selectors containing brackets: --install 'visualizers[rerun]'.\n"
+            "Accepts a comma-separated list of optional submodule names and/or\n"
+            "extra feature selectors, or one of the special values below.\n"
+            "\n"
+            f"* Optional submodules: {_optional_str}\n"
+            "  Installed by 'all' or by explicit token.\n"
+            "\n"
+            f"* Extra feature sets: {_extras_str}\n"
+            "  Install optional heavy dependencies for a feature on top of the core.\n"
+            "  Supports an optional selector in brackets:\n"
+            "    contrib[rlinf]\n"
+            "    ov[ovrtx|ovphysx|all]\n"
+            "    rl[rsl-rl|skrl|sb3|rl-games]  (default: all)\n"
+            "    visualizer[kit|rerun|viser]  (default: all)\n"
+            "  On Linux/macOS, quote selectors containing brackets:\n"
+            "    --install 'rl[rsl-rl]'\n"
             "\n"
             "* Special values:\n"
-            "- all  - Install all Isaac Lab submodules + all RL frameworks (default).\n"
-            "- none - Install only the core 'isaaclab' package.\n"
-            "- <empty> (-i or --install without value) - Install all Isaac Lab submodules + all RL frameworks.\n"
+            "  all   - Core + optional submodules (mimic, teleop) + auto extra\n"
+            "          features (newton, rl, visualizer). Does not install contrib/ov\n"
+            "          dependency extras (default).\n"
+            "  core  - Core submodules only; no optional submodules, no extra features.\n"
+            "  <empty> (-i with no value) - Same as 'all'.\n"
+            "\n"
+            "Note: Contrib and OV source packages are core; runtime dependencies require selectors:\n"
+            "  ./isaaclab.sh -i 'contrib[rlinf]'\n"
+            "  ./isaaclab.sh -i 'ov[ovrtx]'\n"
+            "\n"
+            "Examples:\n"
+            "  ./isaaclab.sh -i\n"
+            "  ./isaaclab.sh -i core\n"
+            "  ./isaaclab.sh -i 'rl[rsl-rl]'\n"
+            "  ./isaaclab.sh -i mimic,teleop,'visualizer[rerun]'\n"
+            "  ./isaaclab.sh -i 'ov[ovrtx]'\n"
             "\n"
         ),
     )
@@ -143,9 +239,9 @@ def cli() -> None:
 
     elif args.python is not None:
         if args.python:
-            run_python_command(args.python[0], args.python[1:])
+            run_python_command(args.python[0], args.python[1:], check=True)
         else:
-            run_python_command("-i", [])
+            run_python_command("-i", [], check=True)
 
     elif args.sim is not None:
         command_run_isaacsim(args.sim)

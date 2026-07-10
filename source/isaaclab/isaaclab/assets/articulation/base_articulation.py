@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 import torch
 import warp as wp
 
+from ...sim import SimulationContext
+from ...utils.leapp.leapp_semantics import OutputKindEnum, joint_names_resolver, leapp_tensor_semantics
 from ..asset_base import AssetBase
 
 if TYPE_CHECKING:
@@ -94,6 +96,8 @@ class BaseArticulation(AssetBase):
             cfg: A configuration instance.
         """
         super().__init__(cfg)
+        sim_ctx = SimulationContext.instance()
+        self._sim_cfg = sim_ctx.cfg if sim_ctx is not None else None
 
     """
     Properties
@@ -172,6 +176,19 @@ class BaseArticulation(AssetBase):
             Use this view with caution. It requires handling of tensors in a specific way.
         """
         raise NotImplementedError()
+
+    @property
+    def num_base_dofs(self) -> int:
+        """Number of free DoFs of the floating base.
+
+        A floating-base articulation can translate and rotate freely in space, so
+        its base contributes 6 DoFs (3 linear, 3 angular). A fixed-base articulation
+        is bolted to the world and contributes 0.
+
+        Use this to map an actuated-joint index ``j`` to its column in the Jacobian
+        / mass matrix / gravity vector: ``column = j + num_base_dofs``.
+        """
+        return 0 if self.is_fixed_base else 6
 
     @property
     @abstractmethod
@@ -328,6 +345,7 @@ class BaseArticulation(AssetBase):
         *,
         root_pose: torch.Tensor | wp.array,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root pose over selected environment indices into the simulation.
 
@@ -344,6 +362,8 @@ class BaseArticulation(AssetBase):
             root_pose: Root poses in simulation frame. Shape is (len(env_ids), 7)
                 or (len(env_ids),) with dtype wp.transformf.
             env_ids: Environment indices. If None, then all indices are used.
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -353,6 +373,7 @@ class BaseArticulation(AssetBase):
         *,
         root_pose: torch.Tensor | wp.array,
         env_mask: wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root pose over selected environment mask into the simulation.
 
@@ -369,6 +390,8 @@ class BaseArticulation(AssetBase):
             root_pose: Root poses in simulation frame. Shape is (num_instances, 7)
                 or (num_instances,) with dtype wp.transformf.
             env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -378,6 +401,7 @@ class BaseArticulation(AssetBase):
         *,
         root_pose: torch.Tensor | wp.array,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root link pose over selected environment indices into the simulation.
 
@@ -394,6 +418,8 @@ class BaseArticulation(AssetBase):
             root_pose: Root poses in simulation frame. Shape is (len(env_ids), 7)
                 or (len(env_ids),) with dtype wp.transformf.
             env_ids: Environment indices. If None, then all indices are used.
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -403,6 +429,7 @@ class BaseArticulation(AssetBase):
         *,
         root_pose: torch.Tensor | wp.array,
         env_mask: wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root link pose over selected environment mask into the simulation.
 
@@ -419,6 +446,8 @@ class BaseArticulation(AssetBase):
             root_pose: Root poses in simulation frame. Shape is (num_instances, 7)
                 or (num_instances,) with dtype wp.transformf.
             env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -428,6 +457,7 @@ class BaseArticulation(AssetBase):
         *,
         root_pose: torch.Tensor | wp.array,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root center of mass pose over selected environment indices into the simulation.
 
@@ -445,6 +475,8 @@ class BaseArticulation(AssetBase):
             root_pose: Root center of mass poses in simulation frame. Shape is (len(env_ids), 7)
                 or (len(env_ids),) with dtype wp.transformf.
             env_ids: Environment indices. If None, then all indices are used.
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -454,6 +486,7 @@ class BaseArticulation(AssetBase):
         *,
         root_pose: torch.Tensor | wp.array,
         env_mask: wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root center of mass pose over selected environment mask into the simulation.
 
@@ -471,6 +504,8 @@ class BaseArticulation(AssetBase):
             root_pose: Root center of mass poses in simulation frame. Shape is (num_instances, 7)
                 or (num_instances,) with dtype wp.transformf.
             env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -480,6 +515,7 @@ class BaseArticulation(AssetBase):
         *,
         root_velocity: torch.Tensor | wp.array,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root center of mass velocity over selected environment indices into the simulation.
 
@@ -499,6 +535,8 @@ class BaseArticulation(AssetBase):
             root_velocity: Root center of mass velocities in simulation world frame. Shape is (len(env_ids), 6)
                 or (len(env_ids),) with dtype wp.spatial_vectorf.
             env_ids: Environment indices. If None, then all indices are used.
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -508,6 +546,7 @@ class BaseArticulation(AssetBase):
         *,
         root_velocity: torch.Tensor | wp.array,
         env_mask: wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root center of mass velocity over selected environment mask into the simulation.
 
@@ -527,6 +566,8 @@ class BaseArticulation(AssetBase):
             root_velocity: Root center of mass velocities in simulation world frame. Shape is (num_instances, 6)
                 or (num_instances,) with dtype wp.spatial_vectorf.
             env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -536,6 +577,7 @@ class BaseArticulation(AssetBase):
         *,
         root_velocity: torch.Tensor | wp.array,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root center of mass velocity over selected environment indices into the simulation.
 
@@ -555,6 +597,8 @@ class BaseArticulation(AssetBase):
             root_velocity: Root center of mass velocities in simulation world frame. Shape is (len(env_ids), 6)
                 or (len(env_ids),) with dtype wp.spatial_vectorf.
             env_ids: Environment indices. If None, then all indices are used.
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -564,6 +608,7 @@ class BaseArticulation(AssetBase):
         *,
         root_velocity: torch.Tensor | wp.array,
         env_mask: wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root center of mass velocity over selected environment mask into the simulation.
 
@@ -583,6 +628,8 @@ class BaseArticulation(AssetBase):
             root_velocity: Root center of mass velocities in simulation world frame. Shape is (num_instances, 6)
                 or (num_instances,) with dtype wp.spatial_vectorf.
             env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -592,6 +639,7 @@ class BaseArticulation(AssetBase):
         *,
         root_velocity: torch.Tensor | wp.array,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root link velocity over selected environment indices into the simulation.
 
@@ -611,6 +659,8 @@ class BaseArticulation(AssetBase):
             root_velocity: Root frame velocities in simulation world frame. Shape is (len(env_ids), 6)
                 or (len(env_ids),) with dtype wp.spatial_vectorf.
             env_ids: Environment indices. If None, then all indices are used.
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -620,6 +670,7 @@ class BaseArticulation(AssetBase):
         *,
         root_velocity: torch.Tensor | wp.array,
         env_mask: wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Set the root link velocity over selected environment mask into the simulation.
 
@@ -639,6 +690,8 @@ class BaseArticulation(AssetBase):
             root_velocity: Root frame velocities in simulation world frame. Shape is (num_instances, 6)
                 or (num_instances,) with dtype wp.spatial_vectorf.
             env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -649,6 +702,7 @@ class BaseArticulation(AssetBase):
         position: torch.Tensor | wp.array,
         joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Write joint positions to the simulation.
 
@@ -663,6 +717,8 @@ class BaseArticulation(AssetBase):
             position: Joint positions. Shape is (len(env_ids), len(joint_ids)).
             joint_ids: The joint indices to set the targets for. Defaults to None (all joints).
             env_ids: The environment indices to set the targets for. Defaults to None (all instances).
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -673,6 +729,7 @@ class BaseArticulation(AssetBase):
         position: torch.Tensor | wp.array,
         joint_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Write joint positions to the simulation.
 
@@ -687,6 +744,8 @@ class BaseArticulation(AssetBase):
             position: Joint positions. Shape is (num_instances, num_joints).
             joint_mask: Joint mask. If None, then all the joints are updated. Shape is (num_joints,).
             env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -697,6 +756,7 @@ class BaseArticulation(AssetBase):
         velocity: torch.Tensor | wp.array,
         joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Write joint velocities to the simulation.
 
@@ -711,6 +771,8 @@ class BaseArticulation(AssetBase):
             velocity: Joint velocities. Shape is (len(env_ids), len(joint_ids)).
             joint_ids: The joint indices to set the targets for. Defaults to None (all joints).
             env_ids: The environment indices to set the targets for. Defaults to None (all instances).
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -721,6 +783,7 @@ class BaseArticulation(AssetBase):
         velocity: torch.Tensor | wp.array,
         joint_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
+        skip_forward: bool = False,
     ) -> None:
         """Write joint velocities to the simulation.
 
@@ -735,6 +798,8 @@ class BaseArticulation(AssetBase):
             velocity: Joint velocities. Shape is (num_instances, num_joints).
             joint_mask: Joint mask. If None, then all the joints are updated. Shape is (num_joints,).
             env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
+            skip_forward: Whether to skip invalidating cached data after the write. When True, the caller
+                must invalidate stale cached data before reading it back. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -1066,11 +1131,12 @@ class BaseArticulation(AssetBase):
         joint_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
     ) -> None:
-        r"""Write joint static friction coefficients into the simulation.
+        r"""Write backend-specific joint friction values into the simulation.
 
-        The joint static friction is a unitless quantity. It relates the magnitude of the spatial force transmitted
-        from the parent body to the child body to the maximal static friction force that may be applied by the solver
-        to resist the joint motion.
+        .. warning::
+            The physical meaning and units of joint friction depend on the concrete backend and solver. Do not assume
+            values are comparable across backends; check the backend-specific implementation before interpreting or
+            reusing them.
 
         .. note::
             This method expects partial data.
@@ -1080,7 +1146,7 @@ class BaseArticulation(AssetBase):
             Some backends may provide optimized implementations for masks / indices.
 
         Args:
-            joint_friction_coeff: Joint static friction coefficient. Shape is (len(env_ids), len(joint_ids)).
+            joint_friction_coeff: Backend-specific joint friction values. Shape is (len(env_ids), len(joint_ids)).
             joint_ids: The joint indices to set the joint torque limits for. Defaults to None (all joints).
             env_ids: The environment indices to set the joint torque limits for. Defaults to None (all instances).
         """
@@ -1094,11 +1160,12 @@ class BaseArticulation(AssetBase):
         joint_mask: wp.array | None = None,
         env_mask: wp.array | None = None,
     ) -> None:
-        r"""Write joint static friction coefficients into the simulation.
+        r"""Write backend-specific joint friction values into the simulation.
 
-        The joint static friction is a unitless quantity. It relates the magnitude of the spatial force transmitted
-        from the parent body to the child body to the maximal static friction force that may be applied by the solver
-        to resist the joint motion.
+        .. warning::
+            The physical meaning and units of joint friction depend on the concrete backend and solver. Do not assume
+            values are comparable across backends; check the backend-specific implementation before interpreting or
+            reusing them.
 
         .. note::
             This method expects full data.
@@ -1108,7 +1175,7 @@ class BaseArticulation(AssetBase):
             Some backends may provide optimized implementations for masks / indices.
 
         Args:
-            joint_friction_coeff: Joint static friction coefficient. Shape is (num_instances, num_joints).
+            joint_friction_coeff: Backend-specific joint friction values. Shape is (num_instances, num_joints).
             joint_mask: Joint mask. If None, then all the joints are updated. Shape is (num_joints,).
             env_mask: Environment mask. If None, then all the instances are updated. Shape is (num_instances,).
         """
@@ -1266,6 +1333,7 @@ class BaseArticulation(AssetBase):
         raise NotImplementedError()
 
     @abstractmethod
+    @leapp_tensor_semantics(kind=OutputKindEnum.JOINT_POSITION, element_names_resolver=joint_names_resolver)
     def set_joint_position_target_index(
         self,
         *,
@@ -1293,6 +1361,7 @@ class BaseArticulation(AssetBase):
         raise NotImplementedError()
 
     @abstractmethod
+    @leapp_tensor_semantics(kind=OutputKindEnum.JOINT_POSITION, element_names_resolver=joint_names_resolver)
     def set_joint_position_target_mask(
         self,
         *,
@@ -1320,6 +1389,7 @@ class BaseArticulation(AssetBase):
         raise NotImplementedError()
 
     @abstractmethod
+    @leapp_tensor_semantics(kind=OutputKindEnum.JOINT_VELOCITY, element_names_resolver=joint_names_resolver)
     def set_joint_velocity_target_index(
         self,
         *,
@@ -1347,6 +1417,7 @@ class BaseArticulation(AssetBase):
         raise NotImplementedError()
 
     @abstractmethod
+    @leapp_tensor_semantics(kind=OutputKindEnum.JOINT_VELOCITY, element_names_resolver=joint_names_resolver)
     def set_joint_velocity_target_mask(
         self,
         *,
@@ -1374,6 +1445,7 @@ class BaseArticulation(AssetBase):
         raise NotImplementedError()
 
     @abstractmethod
+    @leapp_tensor_semantics(kind=OutputKindEnum.JOINT_EFFORT, element_names_resolver=joint_names_resolver)
     def set_joint_effort_target_index(
         self,
         *,
@@ -1401,6 +1473,7 @@ class BaseArticulation(AssetBase):
         raise NotImplementedError()
 
     @abstractmethod
+    @leapp_tensor_semantics(kind=OutputKindEnum.JOINT_EFFORT, element_names_resolver=joint_names_resolver)
     def set_joint_effort_target_mask(
         self,
         *,
@@ -2553,14 +2626,17 @@ class BaseArticulation(AssetBase):
         env_ids: Sequence[int] | torch.Tensor | wp.array | None = None,
         is_global: bool = False,
     ) -> None:
-        """Deprecated, same as :meth:`permanent_wrench_composer.set_forces_and_torques`."""
+        """Deprecated. Resets target environments, then adds forces and torques via the permanent wrench composer."""
         warnings.warn(
-            "The function 'set_external_force_and_torque' will be deprecated in a future release. Please"
-            " use 'permanent_wrench_composer.set_forces_and_torques' instead.",
+            "The function 'set_external_force_and_torque' is deprecated. Please use"
+            " 'permanent_wrench_composer.reset' followed by 'permanent_wrench_composer.add_forces_and_torques'"
+            " instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        self.permanent_wrench_composer.set_forces_and_torques(
+        # Reset only target env_ids then add (not set which clears all envs globally)
+        self.permanent_wrench_composer.reset(env_ids=env_ids)
+        self.permanent_wrench_composer.add_forces_and_torques(
             forces, torques, positions=positions, body_ids=body_ids, env_ids=env_ids, is_global=is_global
         )
 

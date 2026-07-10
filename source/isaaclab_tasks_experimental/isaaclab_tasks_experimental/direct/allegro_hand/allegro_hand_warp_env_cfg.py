@@ -13,8 +13,8 @@ from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
-from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.utils.configclass import configclass
 
 from isaaclab_assets.robots.allegro import ALLEGRO_HAND_CFG
 
@@ -40,7 +40,6 @@ class AllegroHandWarpEnvCfg(DirectRLEnvCfg):
         update_data_interval=2,
         iterations=100,
         ls_iterations=15,
-        ls_parallel=False,
         # save_to_mjcf="AllegroHand.xml",
     )
 

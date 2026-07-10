@@ -2,19 +2,12 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-"""Launch Isaac Sim Simulator first."""
-
-from isaaclab.app import AppLauncher
-
-# launch omniverse app in headless mode
-simulation_app = AppLauncher(headless=True).app
-
-"""Rest everything follows from here."""
-
 import pytest
 import torch
 
 from isaaclab.utils.datasets import EpisodeData
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize("device", ["cuda:0", "cpu"])

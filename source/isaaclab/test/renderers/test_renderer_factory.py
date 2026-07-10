@@ -20,6 +20,8 @@ from isaaclab_newton.renderers import NewtonWarpRendererCfg
 from isaaclab_ov.renderers import OVRTXRendererCfg
 from isaaclab_physx.renderers import IsaacRtxRendererCfg
 
+pytestmark = [pytest.mark.integration, pytest.mark.rendering]
+
 
 def _make_mock_renderer_class(name: str):
     """Create a minimal concrete BaseRenderer subclass for testing."""
@@ -28,10 +30,13 @@ def _make_mock_renderer_class(name: str):
         def __init__(self, cfg=None):
             pass
 
+        def supported_output_types(self):
+            return {}
+
         def prepare_stage(self, stage, num_envs):
             pass
 
-        def create_render_data(self, sensor):
+        def create_render_data(self, spec):
             return None
 
         def set_outputs(self, render_data, output_data):
@@ -46,7 +51,7 @@ def _make_mock_renderer_class(name: str):
         def render(self, render_data):
             pass
 
-        def write_output(self, render_data, output_name, output_data):
+        def read_output(self, render_data, camera_data):
             pass
 
         def cleanup(self, render_data):

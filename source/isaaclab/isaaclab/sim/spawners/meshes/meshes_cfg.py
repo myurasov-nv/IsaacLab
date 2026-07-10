@@ -11,7 +11,7 @@ from typing import Literal
 
 from isaaclab.sim.spawners import materials
 from isaaclab.sim.spawners.spawner_cfg import DeformableObjectSpawnerCfg, RigidObjectSpawnerCfg
-from isaaclab.utils import configclass
+from isaaclab.utils.configclass import configclass
 
 
 @configclass
@@ -57,8 +57,17 @@ class MeshCfg(RigidObjectSpawnerCfg, DeformableObjectSpawnerCfg):
     This parameter is ignored if `physics_material` is not None.
     """
 
-    physics_material: materials.PhysicsMaterialCfg | None = None
+    physics_material: (
+        materials.PhysicsMaterialCfg
+        | materials.RigidBodyMaterialFragment
+        | list[materials.RigidBodyMaterialFragment]
+        | None
+    ) = None
     """Physics material properties.
+
+    Accepts either a legacy material cfg, a single
+    :class:`~isaaclab.sim.spawners.materials.RigidBodyMaterialFragment`, or a list of such
+    single-namespace fragments.
 
     Note:
         If None, then no physics material will be added.
@@ -140,3 +149,18 @@ class MeshConeCfg(MeshCfg):
     """Height of the v (in m)."""
     axis: Literal["X", "Y", "Z"] = "Z"
     """Axis of the cone. Defaults to "Z"."""
+
+
+@configclass
+class MeshRectangleCfg(MeshCfg):
+    """Configuration parameters for a 2D rectangle mesh prim.
+
+    See :meth:`spawn_mesh_rectangle` for more information.
+    """
+
+    func: Callable | str = "{DIR}.meshes:spawn_mesh_rectangle"
+
+    size: tuple[float, float] = MISSING
+    """Edge lengths of the rectangle along the X and Y axes [m]."""
+    resolution: tuple[int, int] = (5, 5)
+    """Resolution of the rectangle (in elements/edges per side)."""

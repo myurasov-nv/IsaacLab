@@ -5,213 +5,361 @@ Cloning Environments
 
 .. currentmodule:: isaaclab
 
-Isaac Lab uses a **template-based cloning** system to efficiently replicate environments for
-parallel simulation. Instead of authoring each environment individually on the USD stage,
-you define a single template and let the cloner stamp out copies with optional per-environment
-variation.
+Parallel simulation at scale needs many environments stepping side by side —
+hundreds, sometimes tens of thousands per GPU — and authoring each of those envs
+by hand would be hopelessly slow. Cloning is Isaac Lab's answer: you author a
+small representative scene under ``/World/envs/env_n`` and the cloner expands it
+across the rest of the env population for you, optionally with per-env variation.
 
-This guide covers the cloning API and how to customize environment creation.
+The expansion itself is performed by each physics backend's native replicator —
+USD, PhysX, or Newton — wrapped by Isaac Lab's core :mod:`isaaclab.cloner` module
+behind a single uniform surface so the same user code works regardless of which
+backend is active.
 
-How Cloning Works
+.. contents:: On this page
+   :local:
+   :depth: 2
+
+
+The Backend Layer
 -----------------
 
-The cloning pipeline has three stages:
+At the bottom of the stack, each backend exposes a single function that takes a
+flat description of the world layout and materializes it on its runtime. The
+signatures are deliberately parallel so the layers above can target every backend
+through one interface:
 
-1. **Template authoring** -- You place one or more *prototype* prims under a template root
-   (default ``/World/template``). Each prototype is a variant of an asset (e.g., different robot
-   configurations or object meshes).
+.. code-block:: text
 
-2. **Clone plan** -- The cloner discovers prototypes, enumerates all possible combinations (one
-   per prototype group), and assigns a combination to each environment using a *strategy*.
+    backend_replicate(stage, sources, destinations, env_ids, mask, positions=None, quaternions=None, ...)
 
-3. **Replication** -- The selected prototypes are replicated to per-environment prim paths via
-   USD spec copying and physics-backend-specific replication.
+The arguments are parallel arrays describing the layout:
 
-Most users interact with cloning indirectly through
-:class:`~isaaclab.scene.InteractiveScene`, which calls
-:func:`~isaaclab.cloner.clone_from_template` during ``clone_environments()``.
-For advanced use cases, you can call the cloning utilities directly.
+* ``sources`` — source prim paths already authored on the stage.
+* ``destinations`` — destination templates containing ``"{}"``, formatted with each env id.
+* ``env_ids`` — long tensor of target env indices.
+* ``mask`` — bool tensor of shape ``[len(sources), num_envs]``; ``mask[i, j]`` is
+  ``True`` when env ``j`` should be populated from source ``i``.
+* ``positions`` / ``quaternions`` — optional per-env world transforms.
 
 
-Basic Usage
------------
+Standalone Examples
+~~~~~~~~~~~~~~~~~~~
 
-The simplest case is homogeneous cloning -- every environment gets the same assets:
+Direct calls into the backend functions, for tooling or tests that need full
+control. Production code reaches for one of the ways in
+`Cloning in a Backend-Agnostic Way`_ instead.
+
+**USD** — clone a visual cube across envs:
 
 .. code-block:: python
 
-    from isaaclab.cloner import TemplateCloneCfg, clone_from_template
-    from isaaclab.sim import SimulationContext
-
-    sim = SimulationContext()
-    stage = sim.stage
-
-    # Spawn a single prototype under the template root using a spawner
+    import torch
     import isaaclab.sim as sim_utils
+    from isaaclab.cloner import usd_replicate
 
-    spawn_cfg = sim_utils.UsdFileCfg(usd_path="path/to/robot.usd")
-    spawn_cfg.func("/World/template/Robot/proto_asset_0", spawn_cfg)
+    num_envs = 128
+    stage = sim_utils.get_current_stage()
+    cube_cfg = sim_utils.CuboidCfg(size=(0.1, 0.1, 0.1))
+    cube_cfg.func("/World/envs/env_0/Cube", cube_cfg)
 
-    # Configure and clone
-    clone_cfg = TemplateCloneCfg(device=sim.cfg.device)
-    clone_from_template(stage, num_clones=128, template_clone_cfg=clone_cfg)
+    usd_replicate(
+        stage,
+        sources=["/World/envs/env_0/Cube"],
+        destinations=["/World/envs/env_{}/Cube"],
+        env_ids=torch.arange(num_envs, device="cuda:0"),
+        mask=torch.ones((1, num_envs), dtype=torch.bool, device="cuda:0"),
+    )
 
-This creates 128 environments at ``/World/envs/env_0`` through ``/World/envs/env_127``,
-each containing a copy of the robot.
+**PhysX** — call PhysX and USD on the same sources and destinations (either order):
+
+.. code-block:: python
+
+    from isaaclab_physx.cloner import physx_replicate
+
+    physx_replicate(stage, sources, destinations, env_ids, mask)
+    usd_replicate(stage, sources, destinations, env_ids, mask)
+
+**Newton**:
+
+.. code-block:: python
+
+    from isaaclab_newton.cloner import newton_physics_replicate
+
+    newton_physics_replicate(stage, sources, destinations, env_ids, mapping=mask)
 
 
-Configuration Reference
------------------------
+Cloning in a Backend-Agnostic Way
+---------------------------------
 
-:class:`~isaaclab.cloner.TemplateCloneCfg` controls the cloning behavior:
+Authoring every prim in every env by hand would be prohibitively slow and would
+also tie scene code to whichever physics engine happens to be active. Isaac Lab
+sidesteps both problems with a single central abstraction:
+:class:`~isaaclab.cloner.ClonePlan` — a compact description of how a small set of
+prim-level prototypes maps onto the full population of envs, with each prototype
+free to land in some envs and not others. A plan is built once, fed to each backend, and
+lets every engine take its own fastest replication path: USD instancing for
+visuals, PhysX's native replicator for rigid bodies and articulations, Newton's
+world system for its parallel pipeline. The same plan drives all of them, so user
+code never branches on the backend.
+
+ClonePlan
+~~~~~~~~~
+
+A plan holds the parallel arrays a backend replicate consumes — sources,
+destinations, mask, env ids — in one place. Conceptually it is a small table
+where each row describes one distinct prototype-to-destination mapping; the
+fields listed below are that table's columns. Every entry point in
+:mod:`isaaclab.cloner` either produces a plan, consumes a plan, or both, so a
+quick look at the fields is the fastest way to build intuition for the rest of
+this page:
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 15 60
+   :widths: 22 78
 
    * - Field
-     - Default
-     - Description
-   * - ``template_root``
-     - ``"/World/template"``
-     - Root path under which prototype prims are authored.
-   * - ``template_prototype_identifier``
-     - ``"proto_asset"``
-     - Name prefix used to discover prototype prims. The cloner finds all prims whose
-       base name starts with this identifier (e.g., ``proto_asset_0``, ``proto_asset_1``).
-   * - ``clone_regex``
-     - ``"/World/envs/env_.*"``
-     - Destination path template. The ``.*`` is replaced with the environment index.
-   * - ``clone_usd``
-     - ``True``
-     - Whether to replicate USD prim specs to destination paths.
-   * - ``clone_physics``
-     - ``True``
-     - Whether to perform physics-backend-specific replication.
-   * - ``physics_clone_fn``
-     - ``None``
-     - Backend-specific physics replication function. Set automatically by
-       :class:`~isaaclab.scene.InteractiveScene`.
-   * - ``visualizer_clone_fn``
-     - ``None``
-     - Optional callback to prebuild visualizer artifacts from the clone plan.
-   * - ``clone_strategy``
-     - ``random``
-     - Strategy function for assigning prototypes to environments. See
-       :ref:`cloning-strategies` below.
-   * - ``device``
-     - ``"cpu"``
-     - Torch device for mapping buffers.
-   * - ``clone_in_fabric``
-     - ``False``
-     - Enable cloning in Fabric (PhysX only, experimental).
+     - Meaning
+   * - ``sources``
+     - Source prim paths, one per replication row.
+   * - ``destinations``
+     - Destination templates with ``"{}"`` for the env id, one per row.
+   * - ``clone_mask``
+     - Bool tensor ``[len(sources), num_envs]``; ``True`` when env ``j`` comes from row ``i``.
+   * - ``env_ids``
+     - Long tensor of target env ids.
+   * - ``positions``
+     - Optional per-env world positions [m], shape ``[num_envs, 3]``.
 
+The plan is stage-agnostic by design — the same instance can be replayed against a
+different stage, inspected by tooling, or serialized.
 
-.. _cloning-strategies:
+When every env is a copy of env_0:
 
-Cloning Strategies
-------------------
+.. code-block:: text
 
-When multiple prototypes exist in the template, the **clone strategy** determines which
-prototype each environment receives. Isaac Lab provides two built-in strategies:
+    sources      = ("/World/envs/env_0",)
+    destinations = ("/World/envs/env_{}",)
+    clone_mask   = [[True, True, ..., True]]
 
-**Random** (default)
+When envs differ — say a cartpole in every env plus a 2-variant obstacle (box into
+envs 0/1, sphere into envs 2/3):
 
-Each environment receives a randomly sampled prototype combination:
+.. code-block:: text
 
-.. code-block:: python
+    sources      = ("/World/envs/env_0/Cartpole",
+                    "/World/envs/env_0/Obstacle_0",     # box prototype
+                    "/World/envs/env_0/Obstacle_1")     # sphere prototype
+    destinations = ("/World/envs/env_{}/Cartpole",
+                    "/World/envs/env_{}/Obstacle",
+                    "/World/envs/env_{}/Obstacle")
+    clone_mask   = [[1, 1, 1, 1],
+                    [1, 1, 0, 0],
+                    [0, 0, 1, 1]]
 
-    from isaaclab.cloner import TemplateCloneCfg, random
+A plan is the *what*. Putting one together and handing it to the backends is
+the *how*, and Isaac Lab exposes three idiomatic ways to do that. All three end
+in the same ``cloner.replicate(plan, stage=...)`` call, so the choice between
+them is purely about ergonomics:
 
-    clone_cfg = TemplateCloneCfg(
-        clone_strategy=random,
-        device="cuda:0",
-    )
+* The first wraps both phases in a context manager and is what
+  :class:`~isaaclab.scene.InteractiveScene` runs under the hood. Reach for it
+  when you want the lifecycle hidden and you are authoring assets through a
+  scene config.
+* The second spells the same flow out as plain function calls, leaving a moment
+  between the build and the drain where you can inspect or mutate the plan.
+  Reach for it when you are assembling a scene outside
+  :class:`~isaaclab.scene.InteractiveScene` or want fine control over timing.
+* The third is a one-shot shortcut for the case where every env is just a copy
+  of env_0. Reach for it in :class:`~isaaclab.envs.DirectRLEnv` and standalone
+  scripts that hand-build the env-0 prototype prim by prim.
 
-This is useful for domain randomization and curriculum learning where you want diverse
-environments.
+``ReplicateSession``
+~~~~~~~~~~~~~~~~~~~~
 
-**Sequential**
-
-Prototypes are assigned in round-robin order (``env_id % num_combinations``):
+:class:`~isaaclab.cloner.ReplicateSession` is a context manager that brackets the
+whole cloning lifecycle. Entering the block builds the plan, the body is where
+you construct your assets (each one registers itself as part of its constructor),
+and exiting the block drains every registration against the plan:
 
 .. code-block:: python
 
-    from isaaclab.cloner import TemplateCloneCfg, sequential
+    with cloner.ReplicateSession(cfgs, num_clones=N, env_spacing=2.0,
+                                 device=device, stage=stage):
+        for cfg in cfgs:
+            cfg.class_type(cfg)
 
-    clone_cfg = TemplateCloneCfg(
-        clone_strategy=sequential,
-        device="cuda:0",
-    )
-
-This produces a deterministic, balanced distribution -- useful for reproducible experiments.
-
-**Custom strategies** can be written as any callable matching the signature
-``(combinations: torch.Tensor, num_clones: int, device: str) -> torch.Tensor``,
-where ``combinations`` has shape ``(num_combinations, num_groups)`` and the return
-value has shape ``(num_clones, num_groups)``.
-
-
-Heterogeneous Environments
---------------------------
-
-To create environments with different assets, place multiple prototypes under the same
-group in the template:
+This is what :class:`~isaaclab.scene.InteractiveScene` runs when you declare assets
+in an :class:`~isaaclab.scene.InteractiveSceneCfg`:
 
 .. code-block:: python
 
-    # Spawn three different object prototypes under the same group
-    import isaaclab.sim as sim_utils
+    @configclass
+    class MySceneCfg(InteractiveSceneCfg):
+        robot = CARTPOLE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        light = AssetBaseCfg(
+            prim_path="/World/Light",
+            spawn=sim_utils.DistantLightCfg(intensity=3000.0),
+        )
 
-    sim_utils.CuboidCfg(size=(0.5, 0.5, 0.5)).func(
-        "/World/template/Object/proto_asset_0", sim_utils.CuboidCfg(size=(0.5, 0.5, 0.5))
-    )
-    sim_utils.ConeCfg(radius=0.25, height=0.5).func(
-        "/World/template/Object/proto_asset_1", sim_utils.ConeCfg(radius=0.25, height=0.5)
-    )
-    sim_utils.SphereCfg(radius=0.25).func(
-        "/World/template/Object/proto_asset_2", sim_utils.SphereCfg(radius=0.25)
-    )
+    scene = InteractiveScene(MySceneCfg(num_envs=128, env_spacing=2.0))
 
-    clone_cfg = TemplateCloneCfg(
-        clone_strategy=sequential,
-        device="cuda:0",
-    )
-    clone_from_template(stage, num_clones=128, template_clone_cfg=clone_cfg)
-    # env_0 gets Cuboid, env_1 gets Cone, env_2 gets Sphere, env_3 gets Cuboid, ...
+When envs need to differ across the population, use
+:class:`~isaaclab.sim.spawners.wrappers.MultiAssetSpawnerCfg` or
+:class:`~isaaclab.sim.spawners.wrappers.MultiUsdFileCfg`; see
+:doc:`multi_asset_spawning`.
 
-When prototypes span multiple groups (e.g., different robots *and* different objects),
-the cloner enumerates the Cartesian product of all groups and assigns combinations
-using the selected strategy.
+``make_clone_plan`` + ``replicate``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-
-Environment Positioning
------------------------
-
-Environments are arranged in a grid layout using :func:`~isaaclab.cloner.grid_transforms`:
+The same two phases as the session, written as separate function calls. The plan
+is built first, asset construction happens in between, and the drain runs
+explicitly at the end. The gap between the build and the drain is the point —
+that is where you can read the plan back, mutate it, log it, or otherwise
+intervene before replication actually happens:
 
 .. code-block:: python
 
-    from isaaclab.cloner import grid_transforms
+    plan = cloner.make_clone_plan(cfgs, num_clones=N, env_spacing=2.0, device=device)
+    for cfg in cfgs:
+        cfg.class_type(cfg)
+    cloner.replicate(plan, stage=stage)
 
-    positions, orientations = grid_transforms(
-        N=128,       # number of environments
-        spacing=2.0, # meters between neighbors
-        up_axis="Z",
-        device="cuda:0",
-    )
-    # positions: (128, 3), orientations: (128, 4) identity quaternions
+``ClonePlan.from_env_0`` + ``replicate``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-:class:`~isaaclab.scene.InteractiveScene` calls this automatically based on
-``InteractiveSceneCfg.env_spacing``.
+Shortcut for the case where every env is just a copy of env_0.
+:meth:`~isaaclab.cloner.ClonePlan.from_env_0` builds the single-source plan in
+one line by pointing at the prototype, and :func:`~isaaclab.cloner.replicate`
+finishes the setup. This is the pattern most :class:`~isaaclab.envs.DirectRLEnv`
+subclasses use — they author the env-0 prototype prim by prim in
+``_setup_scene`` and end the method with these four lines:
 
+.. code-block:: python
+
+    def _setup_scene(self):
+        self.cartpole = Articulation(self.cfg.robot_cfg)
+        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+        # ... any other assets ...
+
+        src, dest = "/World/envs/env_0", "/World/envs/env_{}"
+        pos = cloner.grid_transforms(self.scene.num_envs, self.scene.cfg.env_spacing, device=self.device)[0]
+        plan = cloner.ClonePlan.from_env_0(src, dest, self.scene.num_envs, self.device, pos)
+        cloner.replicate(plan, stage=self.scene.stage)
+
+Every env receives the same prototype. When envs need to differ, use one of the
+other two.
+
+
+Under the Hood
+--------------
+
+To see how the backend-agnostic surface works, follow one asset through the
+system. Suppose you write ``Articulation(cfg)`` for a PhysX articulation
+somewhere inside a :class:`~isaaclab.cloner.ReplicateSession`. The constructor
+does not actually clone anything yet — at that moment the plan describing how
+the full env population should be laid out may not even exist. Instead the
+constructor *registers* the asset with the cloner, the cloner files the
+registration into a queue, and later — when the session exits and the cloner
+runs replication — that registration is handed to the backend code that knows
+how to replicate a PhysX articulation, with the plan telling it where each
+clone goes.
+
+The story has to look like this because the engines underneath disagree about
+*when* and *how* replication actually happens:
+
+* **PhysX** defers the real work to physics runtime. At construction time the
+  only thing user code can do is register intent; PhysX replays those
+  registrations entity by entity when the simulation comes up.
+* **USD** is declarative and immediate — calling :func:`~isaaclab.cloner.usd_replicate`
+  materializes the clones in place, right then and there.
+* **Newton** is also declarative and immediate, but it insists on replicating
+  the whole world in one shot rather than asset by asset, so the framework
+  cannot just hand it one cfg at a time — everything Newton-related has to be
+  assembled first.
+
+Isaac Lab reconciles these into one surface with two small pieces of plumbing.
+Every backend supplies its own :class:`~isaaclab.cloner.UsdReplicateContext` /
+``PhysxReplicateContext`` / ``NewtonReplicateContext``, a class that hides the
+timing and granularity differences above behind a single uniform interface. A
+shared :data:`~isaaclab.cloner.REPLICATION_QUEUE` then remembers which asset
+belongs to which backend's context until it is time to run. The three
+subsections below explain the queue, the contexts, and the function that joins
+them against a plan.
+
+The registration queue
+~~~~~~~~~~~~~~~~~~~~~~
+
+Asset constructors do not replicate inline. They register their intent with
+:data:`~isaaclab.cloner.REPLICATION_QUEUE` and the framework defers the actual
+work to the drain. The queue ends up holding one entry per ``(asset, backend)``
+pair:
+
+.. code-block:: text
+
+    REPLICATION_QUEUE
+        (cartpole_cfg, PhysxReplicateContext)
+        (cartpole_cfg, UsdReplicateContext)
+        (cube_cfg,     UsdReplicateContext)
+        (light_cfg,    UsdReplicateContext)
+        ...
+
+Deferring the work like this buys three things at once:
+
+* Replication can wait until the plan is fully built, so the final layout is
+  known before any prims are spawned.
+* Every asset's request is batched into a single backend call instead of one
+  call per asset.
+* Asset code stays free of any branching on which backend is active — it just
+  registers and lets the framework take it from there.
+
+Backend contexts
+~~~~~~~~~~~~~~~~
+
+Each backend ships a small adapter class — its *replicate context* — that
+knows how to take a registered cfg and replicate it on the backend's specific
+runtime:
+
+.. code-block:: text
+
+    UsdReplicateContext      # replicates USD prim subtrees
+    PhysxReplicateContext    # replicates PhysX rigid bodies and articulations
+    NewtonReplicateContext   # replicates Newton bodies in its parallel pipeline
+
+A single asset can register more than one context — a PhysX articulation
+registers a PhysX context and a USD context so physics and visuals both follow,
+a Newton articulation registers a Newton context plus a USD context only if it
+owns visual prims. This is where backend differences are absorbed: swapping a
+scene from PhysX to Newton swaps which context an asset registers with, while
+the cfgs and the rest of the user code stay unchanged.
+
+Running replication
+~~~~~~~~~~~~~~~~~~~
+
+:func:`~isaaclab.cloner.replicate` is what actually runs the registered work.
+The dispatch shape is roughly:
+
+.. code-block:: python
+
+    def replicate(plan, stage):
+        for context_cls, rows in group_queue_by_context(plan):
+            context_cls().replicate(rows=rows, stage=stage)
+        publish(plan)
+
+Contexts run in a priority order that puts physics ahead of visuals, and the
+plan is published to :class:`~isaaclab.sim.SimulationContext` so the rest of the
+framework can read the per-env layout back.
 
 Collision Filtering
 -------------------
 
-By default, assets in different environments can collide with each other. To prevent
-cross-environment collisions (the typical setup for parallel RL), use
-:func:`~isaaclab.cloner.filter_collisions`:
+PhysX models per-env isolation through collision groups, so PhysX scenes need a
+filtering pass after cloning to keep envs from colliding with each other while
+still letting them collide with global prims (terrain, ground planes, lights).
+
+:class:`~isaaclab.scene.InteractiveScene` runs that pass automatically when
+``filter_collisions=True`` and the backend is PhysX. For direct PhysX pipelines,
+call :func:`~isaaclab.cloner.filter_collisions` after the replicate:
 
 .. code-block:: python
 
@@ -221,47 +369,8 @@ cross-environment collisions (the typical setup for parallel RL), use
         stage=stage,
         physicsscene_path="/physicsScene",
         collision_root_path="/World/collisions",
-        prim_paths=[f"/World/envs/env_{i}" for i in range(128)],
-        global_paths=["/World/defaultGroundPlane"],  # collides with all envs
+        prim_paths=[f"/World/envs/env_{i}" for i in range(num_envs)],
+        global_paths=["/World/ground"],
     )
 
-.. note::
-
-    Collision filtering uses PhysX collision groups and is only applicable to the PhysX backend.
-    The Newton backend handles per-environment isolation through its world system.
-
-
-Physics Backend Replication
----------------------------
-
-Each physics backend has its own replication function that registers cloned prims with the
-physics engine:
-
-- **PhysX**: :func:`~isaaclab_physx.cloner.physx_replicate` -- Uses the PhysX replicator
-  interface for fast physics body registration.
-- **Newton**: :func:`~isaaclab_newton.cloner.newton_physics_replicate` -- Builds a Newton
-  ``ModelBuilder`` with per-environment worlds, supporting heterogeneous spawning.
-
-These functions are set automatically when using :class:`~isaaclab.scene.InteractiveScene`.
-For direct usage:
-
-.. code-block:: python
-
-    import torch
-    from isaaclab_physx.cloner import physx_replicate
-
-    physx_replicate(
-        stage=stage,
-        sources=["/World/envs/env_0/Robot"],
-        destinations=["/World/envs/env_{}/Robot"],  # {} is replaced with env index
-        env_ids=torch.arange(128),
-        mapping=torch.ones(1, 128, dtype=torch.bool),
-        device="cuda:0",
-    )
-
-
-See Also
---------
-
-- :doc:`multi_asset_spawning` -- spawning different assets per environment
-- :doc:`optimize_stage_creation` -- fabric cloning and stage-in-memory optimizations
+Newton isolates envs through its world system and does not need this pass.

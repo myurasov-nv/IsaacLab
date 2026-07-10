@@ -3,10 +3,46 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+from __future__ import annotations
+
 import importlib
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from isaaclab.renderers.renderer_cfg import RendererCfg
 
 logger = logging.getLogger(__name__)
+
+
+def get_default_renderer_cfg() -> RendererCfg:
+    """Return the default :class:`~isaaclab.renderers.renderer_cfg.RendererCfg` for cameras.
+
+    Lazily imports :mod:`isaaclab_physx.renderers` and returns a new
+    :class:`~isaaclab_physx.renderers.IsaacRtxRendererCfg` instance.
+
+    Returns:
+        A new default Isaac RTX renderer configuration.
+
+    Raises:
+        ImportError: If :mod:`isaaclab_physx.renderers` cannot be imported or does not
+            expose ``IsaacRtxRendererCfg``.
+    """
+    try:
+        renderers_mod = importlib.import_module("isaaclab_physx.renderers")
+    except ImportError as e:
+        raise ImportError(
+            "The default camera renderer configuration requires the optional 'isaaclab_physx' "
+            "package (import 'isaaclab_physx.renderers'). Install isaaclab_physx or set "
+            "CameraCfg.renderer_cfg explicitly."
+        ) from e
+    try:
+        default_cls = renderers_mod.IsaacRtxRendererCfg
+    except AttributeError as e:
+        raise ImportError(
+            "Module 'isaaclab_physx.renderers' is available but does not define 'IsaacRtxRendererCfg'."
+        ) from e
+    return default_cls()
 
 
 class FactoryBase:
@@ -44,9 +80,11 @@ class FactoryBase:
         from isaaclab.sim.simulation_context import SimulationContext
 
         manager_name = SimulationContext.instance().physics_manager.__name__.lower()
-        if "newton" in manager_name:
+        if manager_name.startswith("newton"):
             return "newton"
-        if "physx" in manager_name:
+        if manager_name.startswith("ovphysx"):
+            return "ovphysx"
+        if manager_name.startswith("physx"):
             return "physx"
         else:
             raise ValueError(f"Unknown physics manager: {manager_name}")
@@ -56,8 +94,15 @@ class FactoryBase:
         """Return module path that hosts backend implementation for a given backend key."""
         return f"isaaclab_{backend}.{cls._module_subpath}"
 
-    def __new__(cls, *args, **kwargs):
-        """Create a new instance of an implementation based on the backend."""
+    @classmethod
+    def resolve_class(cls, *args, **kwargs) -> type:
+        """Resolve the concrete backend implementation class without instantiating it.
+
+        Selects the backend via :meth:`_get_backend`, lazily importing and registering the
+        implementation class on first use, and returns it. Takes the same arguments as the
+        constructor (the backend selector reads from them). Useful for querying class-level
+        behavior (e.g. capability classmethods) before a sim/instance exists.
+        """
         backend = cls._get_backend(*args, **kwargs)
 
         if cls == FactoryBase:
@@ -92,6 +137,11 @@ class FactoryBase:
                 f"A module was found at '{module_name}', but it did not contain a class with the name {class_name!r}.\n"
                 f"Currently available backends: {available}."
             ) from None
+        return impl
+
+    def __new__(cls, *args, **kwargs):
+        """Create a new instance of an implementation based on the backend."""
+        impl = cls.resolve_class(*args, **kwargs)
         # Return an instance of the chosen class.
         return impl(*args, **kwargs)
 

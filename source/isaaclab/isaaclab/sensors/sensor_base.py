@@ -12,7 +12,7 @@ Each sensor class should inherit from this class and implement the abstract meth
 from __future__ import annotations
 
 import inspect
-import re
+import logging
 import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -22,12 +22,17 @@ import warp as wp
 
 import isaaclab.sim as sim_utils
 from isaaclab.physics import PhysicsEvent, PhysicsManager
-from isaaclab.utils.version import has_kit
+from isaaclab.sim.utils.queries import get_first_matching_ancestor_prim
+from isaaclab.sim.utils.transforms import resolve_prim_pose
 
 from .kernels import reset_envs_kernel, update_outdated_envs_kernel, update_timestamp_kernel
 
 if TYPE_CHECKING:
+    from isaaclab.cloner import ClonePlan
+
     from .sensor_base_cfg import SensorBaseCfg
+
+logger = logging.getLogger(__name__)
 
 
 class SensorBase(ABC):
@@ -51,11 +56,14 @@ class SensorBase(ABC):
         # check that the config is valid
         cfg.validate()
         # store inputs
+        self._source_cfg = cfg
         self.cfg = cfg.copy()
         # flag for whether the sensor is initialized
         self._is_initialized = False
         # flag for whether the sensor is in visualization mode
         self._is_visualizing = False
+        # clone plan used for this sensor's latest initialization
+        self._clone_plan: ClonePlan | None = None
         self.stage = sim_utils.get_current_stage()
 
         # register various callback functions
@@ -148,17 +156,15 @@ class SensorBase(ABC):
         if debug_vis:
             # create a subscriber for the post update event if it doesn't exist
             if self._debug_vis_handle is None:
-                if has_kit():
-                    import omni.kit.app  # noqa: PLC0415
-
-                    app_interface = omni.kit.app.get_app_interface()
-                    self._debug_vis_handle = app_interface.get_post_update_event_stream().create_subscription_to_pop(
-                        lambda event, obj=weakref.proxy(self): obj._debug_vis_callback(event)
-                    )
+                sim_ctx = sim_utils.SimulationContext.instance()
+                if sim_ctx is not None:
+                    self._debug_vis_handle = sim_ctx.vis_marker_registry.add_debug_vis_callback(self)
         else:
             # remove the subscriber if it exists
-            if self._debug_vis_handle is not None:
-                self._debug_vis_handle.unsubscribe()
+            sim_ctx = sim_utils.SimulationContext.instance()
+            if sim_ctx is not None:
+                sim_ctx.vis_marker_registry.clear_debug_vis_callback(self)
+            else:
                 self._debug_vis_handle = None
         # return success
         return True
@@ -179,11 +185,13 @@ class SensorBase(ABC):
             inputs=[env_mask, self._is_outdated, self._timestamp, self._timestamp_last_update],
             device=self._device,
         )
+        self._data_generation += 1
 
     def update(self, dt: float, force_recompute: bool = False):
         # Skip update if sensor is not initialized
         if not self._is_initialized:
             return
+        self._data_generation += 1
         # Update the timestamp for the sensors
         wp.launch(
             update_timestamp_kernel,
@@ -199,7 +207,7 @@ class SensorBase(ABC):
         )
         # Update the buffers
         if force_recompute or self._is_visualizing:
-            self._update_outdated_buffers()
+            self._update_outdated_buffers(force_recompute=force_recompute)
 
     """
     Implementation specific.
@@ -216,10 +224,26 @@ class SensorBase(ABC):
         self._device = sim.device
         self._backend = sim.backend
         self._sim_physics_dt = sim.get_physics_dt()
-        # Count number of environments
-        env_prim_path_expr = self.cfg.prim_path.rsplit("/", 1)[0]
-        self._parent_prims = sim_utils.find_matching_prims(env_prim_path_expr)
-        self._num_envs = len(self._parent_prims)
+        # Count number of environments. Prefer the active simulation's clone plan when USD
+        # only carries the env_0 prototype (e.g. Newton clones solver-side).
+        self._clone_plan = sim.get_clone_plan()
+        clone_plan = self._clone_plan
+        clone_plan_matches = ()
+        if clone_plan is not None:
+            from isaaclab.cloner.cloner_utils import iter_clone_plan_matches  # noqa: PLC0415
+
+            clone_plan_matches = tuple(iter_clone_plan_matches(clone_plan, self.cfg.prim_path))
+        if clone_plan_matches:
+            self._parent_prims = []
+            self._num_envs = int(clone_plan.clone_mask.shape[1])
+        elif clone_plan is not None:
+            env_prim_path_expr = self.cfg.prim_path.rsplit("/", 1)[0]
+            self._parent_prims = sim_utils.find_matching_prims(env_prim_path_expr)
+            self._num_envs = int(clone_plan.env_ids.numel())
+        else:
+            env_prim_path_expr = self.cfg.prim_path.rsplit("/", 1)[0]
+            self._parent_prims = sim_utils.find_matching_prims(env_prim_path_expr)
+            self._num_envs = len(self._parent_prims)
         # Create warp env mask arrays for "all envs" cases and resets.
         # Note: We use wp.to_torch() to create zero-copy torch tensor views of warp arrays.
         # This allows warp arrays to be passed to warp kernels while the corresponding torch
@@ -232,6 +256,8 @@ class SensorBase(ABC):
         self._is_outdated = wp.ones(self._num_envs, dtype=wp.bool, device=self._device)
         self._timestamp = wp.zeros(self._num_envs, dtype=wp.float32, device=self._device)
         self._timestamp_last_update = wp.zeros_like(self._timestamp)
+        self._data_generation = 0
+        self._data_generation_last_update = -1
 
         # Initialize debug visualization handle
         if self._debug_vis_handle is None:
@@ -294,9 +320,11 @@ class SensorBase(ABC):
             PhysicsEvent.STOP,
             order=10,
         )
-        # Optional: prim deletion (only supported by PhysX backend)
+        # Optional: prim deletion (only supported by PhysX backend; the substring
+        # check would also match ``OvPhysxManager``, which does not expose
+        # ``IsaacEvents``, so use an exact class-name match).
         self._prim_deletion_handle = None
-        if "physx" in physics_mgr_cls.__name__.lower():
+        if physics_mgr_cls.__name__ == "PhysxManager":
             from isaaclab_physx.physics import IsaacEvents  # noqa: PLC0415
 
             self._prim_deletion_handle = physics_mgr_cls.register_callback(
@@ -320,8 +348,11 @@ class SensorBase(ABC):
     def _invalidate_initialize_callback(self, event):
         """Invalidates the scene elements."""
         self._is_initialized = False
-        if self._debug_vis_handle is not None:
-            self._debug_vis_handle.unsubscribe()
+        self._clone_plan = None
+        sim_ctx = sim_utils.SimulationContext.instance()
+        if sim_ctx is not None:
+            sim_ctx.vis_marker_registry.clear_debug_vis_callback(self)
+        else:
             self._debug_vis_handle = None
 
     def _on_prim_deletion(self, event) -> None:
@@ -337,10 +368,7 @@ class SensorBase(ABC):
         if prim_path == "/":
             self._clear_callbacks()
             return
-        result = re.match(
-            pattern="^" + "/".join(self.cfg.prim_path.split("/")[: prim_path.count("/") + 1]) + "$", string=prim_path
-        )
-        if result:
+        if sim_utils.matches_path_expr_prefix(self.cfg.prim_path, prim_path):
             self._clear_callbacks()
 
     def _clear_callbacks(self) -> None:
@@ -355,16 +383,20 @@ class SensorBase(ABC):
             self._prim_deletion_handle.deregister()
             self._prim_deletion_handle = None
         # Clear debug visualization
-        if self._debug_vis_handle is not None:
-            self._debug_vis_handle.unsubscribe()
+        sim_ctx = sim_utils.SimulationContext.instance()
+        if sim_ctx is not None:
+            sim_ctx.vis_marker_registry.clear_debug_vis_callback(self)
+        else:
             self._debug_vis_handle = None
 
     """
     Helper functions.
     """
 
-    def _update_outdated_buffers(self):
+    def _update_outdated_buffers(self, force_recompute: bool = False) -> None:
         """Fills the sensor data for the outdated sensors."""
+        if not force_recompute and self._data_generation == self._data_generation_last_update:
+            return
         self._update_buffers_impl(self._is_outdated)
         # update timestamps and clear outdated flags
         wp.launch(
@@ -373,6 +405,7 @@ class SensorBase(ABC):
             inputs=[self._is_outdated, self._timestamp, self._timestamp_last_update],
             device=self._device,
         )
+        self._data_generation_last_update = self._data_generation
 
     def _resolve_indices_and_mask(
         self, env_ids: Sequence[int] | None = None, env_mask: wp.array | None = None
@@ -386,3 +419,68 @@ class SensorBase(ABC):
             self._reset_mask.zero_()
             self._reset_mask_torch[env_ids] = True
             return self._reset_mask
+
+    def _resolve_rigid_body_ancestor_expr(
+        self,
+    ) -> tuple[str, tuple[float, float, float] | None, tuple[float, float, float, float] | None]:
+        """Resolve the rigid-body ancestor view expression and the sensor-to-body offset.
+
+        The sensor's :attr:`SensorBaseCfg.prim_path` may point to any frame
+        inside the asset. To create a physics view, this helper walks ancestors
+        from that prim until it finds one with ``UsdPhysics.RigidBodyAPI``,
+        builds the corresponding destination-side expression, and computes the
+        fixed transform from that body to the configured sensor frame.
+
+        Combines two resolution paths:
+
+        1. When an active :class:`~isaaclab.cloner.ClonePlan` exists, the
+           source-side env path is taken from the plan via
+           :func:`~isaaclab.cloner.resolve_clone_plan_source`, the rigid-body ancestor
+           is located on that source env, and the destination expression is
+           reconstructed by trimming the sensor-relative suffix from the plan's
+           destination glob.
+        2. Otherwise (stage scan fallback for non-cloned setups), the first
+           matching env is located via
+           :func:`~isaaclab.sim.utils.queries.find_first_matching_prim`, the
+           rigid-body ancestor is located on that env, and the destination
+           expression is the configured :attr:`SensorBaseCfg.prim_path` minus
+           the sensor-relative suffix.
+
+        The returned expression may still contain regex-style wildcards (e.g.
+        ``.*``); callers are responsible for converting to glob form for their
+        physics view (e.g. ``.replace(".*", "*")``).
+
+        Returns:
+            A tuple of:
+
+            * ``rigid_parent_expr``: destination-side view expression that
+              matches the rigid-body ancestor across envs.
+            * ``fixed_pos_b``: sensor-relative-to-body translation [m] (xyz),
+              or ``None`` when the sensor is mounted directly at the body
+              origin.
+            * ``fixed_quat_b``: sensor-relative-to-body rotation as a
+              quaternion ``(x, y, z, w)``, or ``None`` when the sensor is
+              mounted directly at the body origin.
+        """
+        prim, target_expr = sim_utils.resolve_matching_prims_from_source(self.cfg.prim_path)[0]
+        from pxr import UsdPhysics  # noqa: PLC0415
+
+        ancestor_prim = get_first_matching_ancestor_prim(
+            prim.GetPath(), predicate=lambda _prim: _prim.HasAPI(UsdPhysics.RigidBodyAPI)
+        )
+        if ancestor_prim is None:
+            raise RuntimeError(f"Failed to find a rigid body ancestor prim at path expression: {self.cfg.prim_path}")
+
+        if ancestor_prim == prim:
+            return target_expr, None, None
+
+        relative_path = prim.GetPath().MakeRelativePath(ancestor_prim.GetPath()).pathString
+        suffix = "/" + relative_path
+        if not target_expr.endswith(suffix):
+            raise RuntimeError(
+                f"Failed to build rigid body ancestor expression: target expression {target_expr!r} does not end "
+                f"with relative path {relative_path!r}."
+            )
+        rigid_parent_expr = target_expr[: -len(suffix)]
+        fixed_pos_b, fixed_quat_b = resolve_prim_pose(prim, ancestor_prim)
+        return rigid_parent_expr, fixed_pos_b, fixed_quat_b

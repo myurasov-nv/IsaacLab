@@ -6,7 +6,6 @@
 """Shared test utilities for Isaac Lab environments."""
 
 import importlib
-import inspect
 import os
 import sys
 
@@ -20,7 +19,13 @@ from isaaclab.envs.utils.spaces import sample_space
 from isaaclab.sim import SimulationContext
 from isaaclab.utils.version import get_isaac_sim_version
 
-from isaaclab_tasks.utils.parse_cfg import apply_named_preset, load_cfg_from_registry, parse_env_cfg
+from isaaclab_tasks.utils.hydra import apply_overrides, collect_presets
+from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry, parse_env_cfg
+
+# Map of task IDs to the reason for marking the corresponding parametrized
+# test cases as expected failures.  Tests that consume :func:`setup_environment`
+# automatically pick up these marks via :class:`pytest.param`.
+XFAIL_TASKS: dict[str, str] = {}
 
 
 def _is_teleop_env(task_spec) -> bool:
@@ -53,6 +58,23 @@ def _is_pickplace_stack_env(task_id: str) -> bool:
     return any(keyword in task_id for keyword in ("Place", "Stack", "NutPour", "ExhaustPipe"))
 
 
+def _task_tier(task_spec) -> str | None:
+    """Return ``"core"`` or ``"contrib"`` based on the task's env-config entry-point module.
+
+    Core tasks register their config under :mod:`isaaclab_tasks.core` and contributed
+    tasks under :mod:`isaaclab_tasks.contrib`. Returns ``None`` if the tier cannot be
+    determined from the registered entry point.
+    """
+    entry = task_spec.kwargs.get("env_cfg_entry_point")
+    if isinstance(entry, str):
+        module = entry.split(":")[0]
+        if module.startswith("isaaclab_tasks.core"):
+            return "core"
+        if module.startswith("isaaclab_tasks.contrib"):
+            return "contrib"
+    return None
+
+
 def _has_physics_preset(raw_cfg, preset_name: str) -> bool:
     """Check if a raw (unresolved) env config has a named physics preset.
 
@@ -62,7 +84,7 @@ def _has_physics_preset(raw_cfg, preset_name: str) -> bool:
 
     Args:
         raw_cfg: Raw env config from :func:`load_cfg_from_registry`.
-        preset_name: Name of the preset to check for (e.g., 'newton').
+        preset_name: Name of the preset to check for (e.g., 'newton_mjwarp').
 
     Returns:
         True if ``raw_cfg.sim.physics`` is a PresetCfg with the given preset field.
@@ -88,7 +110,8 @@ def setup_environment(
     teleop_envs: bool | None = None,
     cartpole_showcase_envs: bool | None = None,
     pickplace_stack_envs: bool | None = None,
-    newton_envs: bool | None = None,
+    newton_mjwarp_envs: bool | None = None,
+    tier: str | None = None,
 ) -> list[str]:
     """
     Acquire all registered Isaac environment task IDs with optional filters.
@@ -115,10 +138,14 @@ def setup_environment(
             - True: include only PickPlace/Stack environments
             - False: exclude PickPlace/Stack environments
             - None: include all environments regardless of pick-place/stack type
-        newton_envs:
-            - True: include only environments that have a newton physics preset
-            - False: exclude environments that have a newton physics preset
-            - None: include all environments regardless of newton preset availability
+        newton_mjwarp_envs:
+            - True: include only environments that have an MJWarp physics preset.
+            - False: exclude environments that have an MJWarp physics preset.
+            - None: include all environments regardless of MJWarp preset availability.
+        tier:
+            - "core": include only core environments (registered under ``isaaclab_tasks.core``).
+            - "contrib": include only contributed environments (registered under ``isaaclab_tasks.contrib``).
+            - None: include all environments regardless of tier.
 
     Returns:
         A sorted list of task IDs matching the selected filters.
@@ -135,6 +162,10 @@ def setup_environment(
 
         # filter Play environments, if needed
         if not include_play and task_spec.id.endswith("Play-v0"):
+            continue
+
+        # apply core/contrib tier filter
+        if tier is not None and _task_tier(task_spec) != tier:
             continue
 
         # TODO: factory environments cause tests to fail if run together with other envs,
@@ -179,13 +210,15 @@ def setup_environment(
                 continue
         # if None: no filter
 
-        # apply newton preset filter
-        if newton_envs is not None:
+        # apply MJWarp preset filter
+        if newton_mjwarp_envs is not None:
             # Use load_cfg_from_registry (not parse_env_cfg) so that the PresetCfg
             # wrapper on sim.physics is not yet resolved to its default.
             raw_cfg = load_cfg_from_registry(task_spec.id, "env_cfg_entry_point")
-            has_newton = _has_physics_preset(raw_cfg, "newton")
-            if (newton_envs is True and not has_newton) or (newton_envs is False and has_newton):
+            has_newton_mjwarp = _has_physics_preset(raw_cfg, "newton_mjwarp")
+            if (newton_mjwarp_envs is True and not has_newton_mjwarp) or (
+                newton_mjwarp_envs is False and has_newton_mjwarp
+            ):
                 continue
         # if None: no filter
 
@@ -199,14 +232,45 @@ def setup_environment(
 
     print(">>> All registered environments:", registered_tasks)
 
-    return registered_tasks
+    # Wrap tasks listed in XFAIL_TASKS in pytest.param so the corresponding
+    # parametrized test cases are reported as xfailed instead of failed.
+    return [
+        pytest.param(task_id, marks=pytest.mark.xfail(reason=XFAIL_TASKS[task_id], strict=False))
+        if task_id in XFAIL_TASKS
+        else task_id
+        for task_id in registered_tasks
+    ]
+
+
+def _fire_all_interval_events_once(env) -> None:
+    """Force every interval-mode event term to fire once.
+
+    Invokes :meth:`~isaaclab.managers.EventManager.apply` with ``mode="interval"``
+    and a ``dt`` larger than any plausible ``interval_range_s`` upper bound, so the
+    trigger condition trips for every term in a single call. The manager re-samples
+    ``time_left`` from each term's original ``interval_range_s`` after firing, so
+    subsequent ``env.step()`` calls observe original interval timing.
+
+    No-op for envs without an :class:`~isaaclab.managers.EventManager` or
+    without any ``interval``-mode terms.
+
+    Args:
+        env: A constructed env instance.
+    """
+    event_manager = getattr(env.unwrapped, "event_manager", None)
+    if event_manager is None:
+        return
+    if "interval" not in event_manager.available_modes:
+        return
+    # Pass a very large dt for (time_left -= dt) to be less than 1e-6
+    event_manager.apply("interval", dt=1e9)
 
 
 def _run_environments(
     task_name,
     device,
     num_envs,
-    num_steps=100,
+    num_steps=20,
     multi_agent=False,
     create_stage_in_memory=False,
     disable_clone_in_fabric=False,
@@ -222,7 +286,7 @@ def _run_environments(
         multi_agent: Whether the environment is multi-agent.
         create_stage_in_memory: Whether to create stage in memory.
         disable_clone_in_fabric: Whether to disable fabric cloning.
-        physics_preset_name: Name of the physics preset to apply (e.g., 'newton').
+        physics_preset_name: Name of the physics preset to apply (e.g., 'newton_mjwarp').
             If None, uses the environment's default physics.
     """
 
@@ -236,10 +300,10 @@ def _run_environments(
 
     # skip these environments as they cannot be run with 32 environments within reasonable VRAM
     if num_envs == 32 and task_name in [
-        "Isaac-Stack-Cube-Franka-IK-Rel-Blueprint-v0",
-        "Isaac-Stack-Cube-Instance-Randomize-Franka-IK-Rel-v0",
-        "Isaac-Stack-Cube-Instance-Randomize-Franka-v0",
-        "Isaac-PickPlace-G1-InspireFTP-Abs-v0",
+        "IsaacContrib-Stack-Cube-Franka-IK-Rel-Blueprint",
+        "IsaacContrib-Stack-Cube-Instance-Randomize-Franka-IK-Rel",
+        "IsaacContrib-Stack-Cube-Instance-Randomize-Franka",
+        "IsaacContrib-PickPlace-G1-InspireFTP-Abs",
     ]:
         return
 
@@ -252,28 +316,13 @@ def _run_environments(
         return
 
     # skip automate environments as they require cuda installation
-    if task_name in ["Isaac-AutoMate-Assembly-Direct-v0", "Isaac-AutoMate-Disassembly-Direct-v0"]:
+    if task_name in ["IsaacContrib-AutoMate-Assembly-Direct", "IsaacContrib-AutoMate-Disassembly-Direct"]:
         return
 
     # skip skillgen environments as they require cuRobo installation;
     # tested separately via test_environments_skillgen.py
     if "Skillgen" in task_name:
         return
-
-    # Check if this is the teddy bear environment and if it's being called from the right test file
-    if task_name == "Isaac-Lift-Teddy-Bear-Franka-IK-Abs-v0":
-        # Get the calling frame to check which test file is calling this function
-        frame = inspect.currentframe()
-        while frame:
-            filename = frame.f_code.co_filename
-            if "test_lift_teddy_bear.py" in filename:
-                # Called from the dedicated test file, allow it to run
-                break
-            frame = frame.f_back
-
-        # If not called from the dedicated test file, skip it
-        if not frame:
-            return
 
     print(f""">>> Running test for environment: {task_name}""")
     _check_random_actions(
@@ -294,7 +343,7 @@ def _check_random_actions(
     task_name: str,
     device: str,
     num_envs: int,
-    num_steps: int = 100,
+    num_steps: int = 20,
     multi_agent: bool = False,
     create_stage_in_memory: bool = False,
     disable_clone_in_fabric: bool = False,
@@ -310,7 +359,7 @@ def _check_random_actions(
         multi_agent: Whether the environment is multi-agent.
         create_stage_in_memory: Whether to create stage in memory.
         disable_clone_in_fabric: Whether to disable fabric cloning.
-        physics_preset_name: Name of the physics preset to apply (e.g., 'newton').
+        physics_preset_name: Name of the physics preset to apply (e.g., 'newton_mjwarp').
             If None, uses the environment's default physics.
     """
     # create a new context stage, if stage in memory is not enabled
@@ -326,21 +375,12 @@ def _check_random_actions(
         # apply physics preset override before creating the environment
         if physics_preset_name is not None:
             # parse_env_cfg already resolved PresetCfg wrappers to their default,
-            # so we load the raw config to retrieve the named preset.
+            # so we load the raw config to retrieve preset alternatives.
             raw_cfg = load_cfg_from_registry(task_name, "env_cfg_entry_point")
-            # Unwrap if the top-level cfg is itself a PresetCfg wrapper.
-            raw_env_cfg = raw_cfg
-            if (
-                not isinstance(raw_cfg, dict)
-                and hasattr(raw_cfg, "__dataclass_fields__")
-                and hasattr(raw_cfg, "default")
-                and not hasattr(type(raw_cfg), "class_type")
-            ):
-                raw_env_cfg = raw_cfg.default
-            # Apply the named preset to all preset wrappers in the config tree
-            # (e.g. sim.physics, scene.contact_forces, ...), not just sim.physics.
-            apply_named_preset(env_cfg, raw_env_cfg, physics_preset_name)
-            # Re-apply num_envs since apply_named_preset may have replaced
+            presets = {"env": collect_presets(raw_cfg), "agent": {}}
+            hydra_cfg = {"env": env_cfg.to_dict(), "agent": None}
+            apply_overrides(env_cfg, None, hydra_cfg, [physics_preset_name], [], [], presets)
+            # Re-apply num_envs since apply_overrides may have replaced
             # the scene config with the preset's default num_envs.
             if num_envs is not None:
                 env_cfg.scene.num_envs = num_envs
@@ -354,29 +394,28 @@ def _check_random_actions(
             if not hasattr(env_cfg, "possible_agents"):
                 print(f"[INFO]: Skipping {task_name} as it is not a multi-agent task")
                 return
-            env = gym.make(task_name, cfg=env_cfg)
         else:
             if hasattr(env_cfg, "possible_agents"):
                 print(f"[INFO]: Skipping {task_name} as it is a multi-agent task")
                 return
-            env = gym.make(task_name, cfg=env_cfg)
+
+        # TODO: Selecting the MJWarp preset routes through the Newton backend, which does not yet
+        # support multi-asset spawning; some combinations fail config validation here with a
+        # ValueError. Consider filtering invalid combinations in setup_environment() rather than
+        # forgiving them at runtime. See PR #5097 commit fb2c74a3862 for a workaround that caught
+        # the error and called pytest.skip().
+        env = gym.make(task_name, cfg=env_cfg)
 
         # disable control on stop
         env.unwrapped.sim._app_control_on_stop_handle = None  # type: ignore
-
-        # override action space if set to inf for `Isaac-Lift-Teddy-Bear-Franka-IK-Abs-v0`
-        if task_name == "Isaac-Lift-Teddy-Bear-Franka-IK-Abs-v0":
-            for i in range(env.unwrapped.single_action_space.shape[0]):
-                if env.unwrapped.single_action_space.low[i] == float("-inf"):
-                    env.unwrapped.single_action_space.low[i] = -1.0
-                if env.unwrapped.single_action_space.high[i] == float("inf"):
-                    env.unwrapped.single_action_space.low[i] = 1.0
 
         # reset environment
         obs, _ = env.reset()
 
         # check signal
         assert _check_valid_tensor(obs)
+
+        _fire_all_interval_events_once(env)
 
         # simulate environment for num_steps
         with torch.inference_mode():

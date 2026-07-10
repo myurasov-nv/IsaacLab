@@ -5,7 +5,7 @@
 
 """Configuration for Newton OpenGL Visualizer."""
 
-from isaaclab.utils import configclass
+from isaaclab.utils.configclass import configclass
 from isaaclab.visualizers.visualizer_cfg import VisualizerCfg
 
 
@@ -25,14 +25,14 @@ class NewtonVisualizerCfg(VisualizerCfg):
     headless: bool = False
     """Run the Newton viewer without requiring a display server."""
 
-    max_worlds: int | None = None
-    """Maximum number of worlds/environments rendered by the viewer.
-
-    Set to ``None`` to leave this option disabled.
-    """
-
     update_frequency: int = 1
     """Visualizer update frequency (updates every N frames)."""
+
+    world_spacing: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """Visual spacing between simulation worlds along each axis [m].
+
+    Non-zero axes arrange visible worlds in a compact grid without changing their simulated poses.
+    """
 
     show_joints: bool = False
     """Show joint visualization."""
@@ -40,11 +40,26 @@ class NewtonVisualizerCfg(VisualizerCfg):
     show_contacts: bool = False
     """Show contact visualization."""
 
+    show_collision: bool = False
+    """Show collision visualization."""
+
     show_springs: bool = False
     """Show spring visualization."""
 
+    show_inertia_boxes: bool = False
+    """Show inertia box visualization."""
+
     show_com: bool = False
     """Show center of mass visualization."""
+
+    show_particles: bool = False
+    """Show particle visualization."""
+
+    particle_color: tuple[float, float, float] | None = None
+    """Optional particle color RGB [0, 1]. If None, use Newton viewer defaults.
+
+    Values are passed through to the Newton viewer unchanged.
+    """
 
     enable_shadows: bool = True
     """Enable shadow rendering."""

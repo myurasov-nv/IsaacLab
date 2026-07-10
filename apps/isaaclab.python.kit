@@ -14,23 +14,26 @@ keywords = ["experience", "app", "usd"]
 # Isaac Sim extensions
 "isaacsim.app.about" = {}
 "isaacsim.examples.browser" = {}
-"isaacsim.core.api" = {}
 "isaacsim.core.cloner" = {}
+"isaacsim.core.deprecation_manager" = { order = -100 }
+"isaacsim.core.experimental.materials" = {}
+"isaacsim.core.experimental.objects" = {}
+"isaacsim.core.experimental.primdata" = {}
+"isaacsim.core.experimental.prims" = {}
+"isaacsim.core.experimental.utils" = {}
 "isaacsim.core.nodes" = {}
+"isaacsim.core.rendering_manager" = {}
+"isaacsim.core.simulation_manager" = {}
 "isaacsim.core.throttling" = {}
-"isaacsim.core.utils" = {}
 "isaacsim.core.version" = {}
-"isaacsim.gui.menu" = {}
 "isaacsim.gui.property" = {}
 "isaacsim.replicator.behavior" = {}
-"isaacsim.robot.manipulators" = {}
 "isaacsim.robot.policy.examples" = {}
 "isaacsim.robot.schema" = {}
-"isaacsim.robot.wheeled_robots" = {}
-"isaacsim.sensors.camera" = {}
-"isaacsim.sensors.physics" = {}
-"isaacsim.sensors.physx" = {}
-"isaacsim.sensors.rtx" = {}
+"isaacsim.robot.experimental.wheeled_robots" = { optional = true }
+"isaacsim.robot.wheeled_robots.nodes" = { optional = true }
+"isaacsim.sensors.experimental.physics" = {}
+"isaacsim.sensors.experimental.rtx" = {}
 "isaacsim.simulation_app" = {}
 "isaacsim.storage.native" = {}
 "isaacsim.util.debug_draw" = {}
@@ -92,7 +95,6 @@ keywords = ["experience", "app", "usd"]
 "omni.uiaudio" = {}
 "omni.usd.metrics.assembler.ui" = {}
 "omni.usd.schema.metrics.assembler" = {}
-"omni.warp.core" = {}
 
 ########################
 # Isaac Lab Extensions #
@@ -120,6 +122,7 @@ exts."omni.kit.viewport.window".windowMenu.label = "" # Put Viewport menuitem un
 exts."omni.rtx.window.settings".window_menu = "Window" # Where to put the render settings menuitem
 exts."omni.usd".locking.onClose = false # reduce time it takes to close/create stage
 renderer.asyncInit = true # Don't block while renderer inits
+renderer.scenePartitioning.enabled = true # Enable before RTX initialization so env-root partitions are honored
 renderer.gpuEnumeration.glInterop.enabled = false # Improves startup speed.
 rendergraph.mgpu.backend = "copyQueue" # In MGPU configurations, This setting can be removed if IOMMU is disabled for better performance, copyQueue improves stability and performance when IOMMU is enabled
 rtx-transient.dlssg.enabled = false # DLSSG frame generation is not compatible with synthetic data generation
@@ -246,6 +249,12 @@ omni.replicator.asyncRendering = false
 app.asyncRendering = false
 app.asyncRenderingLowLatency = false
 
+# Use one renderer GPU by default. Applications that need single-process multi-GPU rendering can override these
+# settings through AppLauncher's ``kit_args``.
+renderer.multiGpu.enabled = false
+renderer.multiGpu.autoEnable = false
+renderer.multiGpu.maxGpuCount = 1
+
 ### FSD
 app.useFabricSceneDelegate = true
 rtx.hydra.readTransformsFromFabricInRenderDelegate = true
@@ -257,7 +266,7 @@ exts."omni.replicator.core".Orchestrator.enabled = false
 omni.rtx.nre.compositing.rendererHints = 3
 
 # explicitly disable omni.kit.pip_archive to prevent conflicting dependencies
-app.extensions.excluded = ["omni.kit.pip_archive"]
+app.extensions.excluded = ["omni.kit.pip_archive", "omni.isaac.ml_archive", "isaacsim.pip.newton", "omni.warp.core"]
 
 [settings.app.livestream]
 outDirectory = "${data}"
@@ -274,11 +283,9 @@ folders = [
     "${exe-path}/exts",  # kit extensions
     "${exe-path}/extscore",  # kit core extensions
     "${exe-path}/../exts",  # isaac extensions
-    "${exe-path}/../extsDeprecated",  # deprecated isaac extensions
     "${exe-path}/../extscache",  # isaac cache extensions
     "${exe-path}/../extsPhysics",  # isaac physics extensions
     "${exe-path}/../isaacsim/exts",  # isaac extensions for pip
-    "${exe-path}/../isaacsim/extsDeprecated",  # deprecated isaac extensions
     "${exe-path}/../isaacsim/extscache",  # isaac cache extensions for pip
     "${exe-path}/../isaacsim/extsPhysics",  # isaac physics extensions for pip
     "${app}", # needed to find other app files
@@ -306,6 +313,6 @@ fabricUseGPUInterop = true
 # set the S3 directory manually to the latest published S3
 # note: this is done to ensure prior versions of Isaac Sim still use the latest assets
 [settings]
-persistent.isaac.asset_root.default = "https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0"
-persistent.isaac.asset_root.cloud = "https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0"
-persistent.isaac.asset_root.nvidia = "https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0"
+persistent.isaac.asset_root.default = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0"
+persistent.isaac.asset_root.cloud = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0"
+persistent.isaac.asset_root.nvidia = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0"

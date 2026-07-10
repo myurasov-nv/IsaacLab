@@ -8,6 +8,16 @@ from abc import ABC, abstractmethod
 
 import warp as wp
 
+from isaaclab.utils.leapp import (
+    InputKindEnum,
+    body_pose6_resolver,
+    body_pose_resolver,
+    body_quat_resolver,
+    body_xyz_resolver,
+    leapp_tensor_semantics,
+)
+from isaaclab.utils.warp import ProxyArray
+
 
 class BaseRigidObjectCollectionData(ABC):
     """Data container for a rigid object collection.
@@ -50,11 +60,39 @@ class BaseRigidObjectCollectionData(ABC):
         """
         raise NotImplementedError()
 
+    @abstractmethod
+    def _reset_pose(self, from_link: bool = True) -> None:
+        """Invalidate cached pose-dependent quantities after a pose write to the simulation.
+
+        Backends implement this to mark the affected pose buffers stale (and trigger any
+        forward-kinematics refresh) so the next read recomputes from the freshly written state.
+
+        Args:
+            from_link: Set ``True`` when the body link pose was written so the derived
+                center-of-mass pose (:attr:`body_com_pose_w`) is also invalidated; set ``False``
+                when the center-of-mass pose was written directly so it is not clobbered.
+        """
+        raise NotImplementedError()
+
+    @abstractmethod
+    def _reset_velocity(self, from_com: bool = True) -> None:
+        """Invalidate cached velocity-dependent quantities after a velocity write to the simulation.
+
+        Backends implement this to mark the affected velocity buffers stale (and trigger any
+        forward-kinematics refresh) so the next read recomputes from the freshly written state.
+
+        Args:
+            from_com: Set ``True`` when the body center-of-mass velocity was written so the derived
+                link velocity (:attr:`body_link_vel_w`) is also invalidated; set ``False`` when the
+                link velocity was written directly so it is not clobbered.
+        """
+        raise NotImplementedError()
+
     ##
     # Names.
     ##
 
-    body_names: list[str] = None
+    body_names: list[str] | None = None
     """Body names in the order parsed by the simulation view."""
 
     ##
@@ -63,7 +101,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def default_body_pose(self) -> wp.array:
+    @leapp_tensor_semantics(const=True)
+    def default_body_pose(self) -> ProxyArray:
         """Default body pose ``[pos, quat]`` in local environment frame.
 
         The position and quaternion are of the rigid body's actor frame.
@@ -74,7 +113,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def default_body_vel(self) -> wp.array:
+    @leapp_tensor_semantics(const=True)
+    def default_body_vel(self) -> ProxyArray:
         """Default body velocity ``[lin_vel, ang_vel]`` in local environment frame.
 
         The linear and angular velocities are of the rigid body's center of mass frame.
@@ -85,7 +125,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def default_body_state(self) -> wp.array:
+    @leapp_tensor_semantics(const=True)
+    def default_body_state(self) -> ProxyArray:
         """Deprecated, same as :attr:`default_body_pose` and :attr:`default_body_vel`."""
         raise NotImplementedError()
 
@@ -95,7 +136,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_link_pose_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSE, element_names_resolver=body_pose_resolver)
+    def body_link_pose_w(self) -> ProxyArray:
         """Body link pose ``[pos, quat]`` in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.transformf. In torch this resolves to
@@ -108,7 +150,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_link_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_VEL, element_names_resolver=body_pose6_resolver)
+    def body_link_vel_w(self) -> ProxyArray:
         """Body link velocity ``[lin_vel, ang_vel]`` in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.spatial_vectorf. In torch this resolves to
@@ -121,7 +164,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_pose_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSE, element_names_resolver=body_pose_resolver)
+    def body_com_pose_w(self) -> ProxyArray:
         """Body center of mass pose ``[pos, quat]`` in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.transformf. In torch this resolves to
@@ -134,7 +178,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_VEL, element_names_resolver=body_pose6_resolver)
+    def body_com_vel_w(self) -> ProxyArray:
         """Body center of mass velocity ``[lin_vel, ang_vel]`` in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.spatial_vectorf. In torch this resolves to
@@ -147,25 +192,29 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_state_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind="state/body/state")
+    def body_state_w(self) -> ProxyArray:
         """Deprecated, same as :attr:`body_link_pose_w` and :attr:`body_com_vel_w`."""
         raise NotImplementedError()
 
     @property
     @abstractmethod
-    def body_link_state_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind="state/body/link_state")
+    def body_link_state_w(self) -> ProxyArray:
         """Deprecated, same as :attr:`body_link_pose_w` and :attr:`body_link_vel_w`."""
         raise NotImplementedError()
 
     @property
     @abstractmethod
-    def body_com_state_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind="state/body/com_state")
+    def body_com_state_w(self) -> ProxyArray:
         """Deprecated, same as :attr:`body_com_pose_w` and :attr:`body_com_vel_w`."""
         raise NotImplementedError()
 
     @property
     @abstractmethod
-    def body_com_acc_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ACC, element_names_resolver=body_pose6_resolver)
+    def body_com_acc_w(self) -> ProxyArray:
         """Acceleration of all bodies ``[lin_acc, ang_acc]`` in the simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.spatial_vectorf. In torch this resolves to
@@ -177,7 +226,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_pose_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSE, element_names_resolver=body_pose_resolver)
+    def body_com_pose_b(self) -> ProxyArray:
         """Center of mass pose ``[pos, quat]`` of all bodies in their respective body's link frames.
 
         Shape is (num_instances, num_bodies), dtype = wp.transformf. In torch this resolves to
@@ -190,7 +240,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_mass(self) -> wp.array:
+    @leapp_tensor_semantics(const=True)
+    def body_mass(self) -> ProxyArray:
         """Mass of all bodies in the simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.float32. In torch this resolves to (num_instances, num_bodies).
@@ -199,7 +250,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_inertia(self) -> wp.array:
+    @leapp_tensor_semantics(const=True)
+    def body_inertia(self) -> ProxyArray:
         """Inertia of all bodies in the simulation world frame.
 
         Shape is (num_instances, num_bodies, 9), dtype = wp.float32. In torch this resolves to
@@ -213,7 +265,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def projected_gravity_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.VECTOR3D, element_names_resolver=body_xyz_resolver)
+    def projected_gravity_b(self) -> ProxyArray:
         """Projection of the gravity direction on base frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -223,7 +276,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def heading_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind="state/body/heading")
+    def heading_w(self) -> ProxyArray:
         """Yaw heading of the base frame (in radians).
 
         Shape is (num_instances, num_bodies), dtype = wp.float32.
@@ -237,7 +291,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_link_lin_vel_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def body_link_lin_vel_b(self) -> ProxyArray:
         """Root link linear velocity in base frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -250,7 +305,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_link_ang_vel_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def body_link_ang_vel_b(self) -> ProxyArray:
         """Root link angular velocity in base frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -263,7 +319,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_lin_vel_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def body_com_lin_vel_b(self) -> ProxyArray:
         """Root center of mass linear velocity in base frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -276,7 +333,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_ang_vel_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def body_com_ang_vel_b(self) -> ProxyArray:
         """Root center of mass angular velocity in base frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -293,7 +351,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_link_pos_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSITION, element_names_resolver=body_xyz_resolver)
+    def body_link_pos_w(self) -> ProxyArray:
         """Positions of all bodies in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -305,7 +364,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_link_quat_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ROTATION, element_names_resolver=body_quat_resolver)
+    def body_link_quat_w(self) -> ProxyArray:
         """Orientation (x, y, z, w) of all bodies in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.quatf. In torch this resolves to
@@ -317,7 +377,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_link_lin_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def body_link_lin_vel_w(self) -> ProxyArray:
         """Linear velocity of all bodies in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -329,7 +390,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_link_ang_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def body_link_ang_vel_w(self) -> ProxyArray:
         """Angular velocity of all bodies in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -341,7 +403,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_pos_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSITION, element_names_resolver=body_xyz_resolver)
+    def body_com_pos_w(self) -> ProxyArray:
         """Positions of all bodies' center of mass in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -353,7 +416,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_quat_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ROTATION, element_names_resolver=body_quat_resolver)
+    def body_com_quat_w(self) -> ProxyArray:
         """Orientation (x, y, z, w) of the principal axes of inertia of all bodies in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.quatf. In torch this resolves to
@@ -365,7 +429,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_lin_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def body_com_lin_vel_w(self) -> ProxyArray:
         """Linear velocity of all bodies in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -377,7 +442,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_ang_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def body_com_ang_vel_w(self) -> ProxyArray:
         """Angular velocity of all bodies in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -389,7 +455,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_lin_acc_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_ACCELERATION, element_names_resolver=body_xyz_resolver)
+    def body_com_lin_acc_w(self) -> ProxyArray:
         """Linear acceleration of all bodies in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -401,7 +468,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_ang_acc_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_ACCELERATION, element_names_resolver=body_xyz_resolver)
+    def body_com_ang_acc_w(self) -> ProxyArray:
         """Angular acceleration of all bodies in simulation world frame.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -413,7 +481,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_pos_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSITION, element_names_resolver=body_xyz_resolver)
+    def body_com_pos_b(self) -> ProxyArray:
         """Center of mass position of all of the bodies in their respective link frames.
 
         Shape is (num_instances, num_bodies), dtype = wp.vec3f. In torch this resolves to
@@ -425,7 +494,8 @@ class BaseRigidObjectCollectionData(ABC):
 
     @property
     @abstractmethod
-    def body_com_quat_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ROTATION, element_names_resolver=body_quat_resolver)
+    def body_com_quat_b(self) -> ProxyArray:
         """Orientation (x, y, z, w) of the principal axes of inertia of all of the bodies in their
         respective link frames.
 
@@ -441,57 +511,68 @@ class BaseRigidObjectCollectionData(ABC):
     """
 
     @property
-    def body_pose_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSE, element_names_resolver=body_pose_resolver)
+    def body_pose_w(self) -> ProxyArray:
         """Shorthand for :attr:`body_link_pose_w`."""
         return self.body_link_pose_w
 
     @property
-    def body_pos_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSITION, element_names_resolver=body_xyz_resolver)
+    def body_pos_w(self) -> ProxyArray:
         """Shorthand for :attr:`body_link_pos_w`."""
         return self.body_link_pos_w
 
     @property
-    def body_quat_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ROTATION, element_names_resolver=body_quat_resolver)
+    def body_quat_w(self) -> ProxyArray:
         """Shorthand for :attr:`body_link_quat_w`."""
         return self.body_link_quat_w
 
     @property
-    def body_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_VEL, element_names_resolver=body_pose6_resolver)
+    def body_vel_w(self) -> ProxyArray:
         """Shorthand for :attr:`body_com_vel_w`."""
         return self.body_com_vel_w
 
     @property
-    def body_lin_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def body_lin_vel_w(self) -> ProxyArray:
         """Shorthand for :attr:`body_com_lin_vel_w`."""
         return self.body_com_lin_vel_w
 
     @property
-    def body_ang_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def body_ang_vel_w(self) -> ProxyArray:
         """Shorthand for :attr:`body_com_ang_vel_w`."""
         return self.body_com_ang_vel_w
 
     @property
-    def body_acc_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ACC, element_names_resolver=body_pose6_resolver)
+    def body_acc_w(self) -> ProxyArray:
         """Shorthand for :attr:`body_com_acc_w`."""
         return self.body_com_acc_w
 
     @property
-    def body_lin_acc_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_ACCELERATION, element_names_resolver=body_xyz_resolver)
+    def body_lin_acc_w(self) -> ProxyArray:
         """Shorthand for :attr:`body_com_lin_acc_w`."""
         return self.body_com_lin_acc_w
 
     @property
-    def body_ang_acc_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_ACCELERATION, element_names_resolver=body_xyz_resolver)
+    def body_ang_acc_w(self) -> ProxyArray:
         """Shorthand for :attr:`body_com_ang_acc_w`."""
         return self.body_com_ang_acc_w
 
     @property
-    def com_pos_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSITION, element_names_resolver=body_xyz_resolver)
+    def com_pos_b(self) -> ProxyArray:
         """Shorthand for :attr:`body_com_pos_b`."""
         return self.body_com_pos_b
 
     @property
-    def com_quat_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ROTATION, element_names_resolver=body_quat_resolver)
+    def com_quat_b(self) -> ProxyArray:
         """Shorthand for :attr:`body_com_quat_b`."""
         return self.body_com_quat_b
 
@@ -505,7 +586,8 @@ class BaseRigidObjectCollectionData(ABC):
     """
 
     @property
-    def default_object_pose(self) -> wp.array:
+    @leapp_tensor_semantics(const=True)
+    def default_object_pose(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`default_body_pose` instead."""
         warnings.warn(
             "The `default_object_pose` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -516,7 +598,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.default_body_pose
 
     @property
-    def default_object_vel(self) -> wp.array:
+    @leapp_tensor_semantics(const=True)
+    def default_object_vel(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`default_body_vel` instead."""
         warnings.warn(
             "The `default_object_vel` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -527,7 +610,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.default_body_vel
 
     @property
-    def default_object_state(self) -> wp.array:
+    @leapp_tensor_semantics(const=True)
+    def default_object_state(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`default_body_state` instead."""
         warnings.warn(
             "The `default_object_state` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -538,6 +622,7 @@ class BaseRigidObjectCollectionData(ABC):
         return self.default_body_state
 
     @property
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSE, element_names_resolver=body_pose_resolver)
     def object_link_pose_w(self):
         """Deprecated property. Please use :attr:`body_link_pose_w` instead."""
         warnings.warn(
@@ -549,6 +634,7 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_pose_w
 
     @property
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_VEL, element_names_resolver=body_pose6_resolver)
     def object_link_vel_w(self):
         """Deprecated property. Please use :attr:`body_link_vel_w` instead."""
         warnings.warn(
@@ -560,6 +646,7 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_vel_w
 
     @property
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSE, element_names_resolver=body_pose_resolver)
     def object_com_pose_w(self):
         """Deprecated property. Please use :attr:`body_com_pose_w` instead."""
         warnings.warn(
@@ -571,6 +658,7 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_pose_w
 
     @property
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_VEL, element_names_resolver=body_pose6_resolver)
     def object_com_vel_w(self):
         """Deprecated property. Please use :attr:`body_com_vel_w` instead."""
         warnings.warn(
@@ -582,6 +670,7 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_vel_w
 
     @property
+    @leapp_tensor_semantics(kind="state/body/state")
     def object_state_w(self):
         """Deprecated property. Please use :attr:`body_state_w` instead."""
         warnings.warn(
@@ -592,6 +681,7 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_state_w
 
     @property
+    @leapp_tensor_semantics(kind="state/body/link_state")
     def object_link_state_w(self):
         """Deprecated property. Please use :attr:`body_link_state_w` instead."""
         warnings.warn(
@@ -603,6 +693,7 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_state_w
 
     @property
+    @leapp_tensor_semantics(kind="state/body/com_state")
     def object_com_state_w(self):
         """Deprecated property. Please use :attr:`body_com_state_w` instead."""
         warnings.warn(
@@ -614,6 +705,7 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_state_w
 
     @property
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ACC, element_names_resolver=body_pose6_resolver)
     def object_com_acc_w(self):
         """Deprecated property. Please use :attr:`body_com_acc_w` instead."""
         warnings.warn(
@@ -625,6 +717,7 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_acc_w
 
     @property
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSE, element_names_resolver=body_pose_resolver)
     def object_com_pose_b(self):
         """Deprecated property. Please use :attr:`body_com_pose_b` instead."""
         warnings.warn(
@@ -636,7 +729,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_pose_b
 
     @property
-    def object_link_pos_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSITION, element_names_resolver=body_xyz_resolver)
+    def object_link_pos_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_link_pos_w` instead."""
         warnings.warn(
             "The `object_link_pos_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -647,7 +741,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_pos_w
 
     @property
-    def object_link_quat_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ROTATION, element_names_resolver=body_quat_resolver)
+    def object_link_quat_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_link_quat_w` instead."""
         warnings.warn(
             "The `object_link_quat_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -658,7 +753,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_quat_w
 
     @property
-    def object_link_lin_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_link_lin_vel_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_link_lin_vel_w` instead."""
         warnings.warn(
             "The `object_link_lin_vel_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -669,7 +765,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_lin_vel_w
 
     @property
-    def object_link_ang_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_link_ang_vel_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_link_ang_vel_w` instead."""
         warnings.warn(
             "The `object_link_ang_vel_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -680,7 +777,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_ang_vel_w
 
     @property
-    def object_com_pos_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSITION, element_names_resolver=body_xyz_resolver)
+    def object_com_pos_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_pos_w` instead."""
         warnings.warn(
             "The `object_com_pos_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -691,7 +789,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_pos_w
 
     @property
-    def object_com_quat_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ROTATION, element_names_resolver=body_quat_resolver)
+    def object_com_quat_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_quat_w` instead."""
         warnings.warn(
             "The `object_com_quat_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -702,7 +801,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_quat_w
 
     @property
-    def object_com_lin_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_com_lin_vel_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_lin_vel_w` instead."""
         warnings.warn(
             "The `object_com_lin_vel_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -713,7 +813,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_lin_vel_w
 
     @property
-    def object_com_ang_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_com_ang_vel_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_ang_vel_w` instead."""
         warnings.warn(
             "The `object_com_ang_vel_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -724,7 +825,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_ang_vel_w
 
     @property
-    def object_com_lin_acc_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_ACCELERATION, element_names_resolver=body_xyz_resolver)
+    def object_com_lin_acc_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_lin_acc_w` instead."""
         warnings.warn(
             "The `object_com_lin_acc_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -735,7 +837,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_lin_acc_w
 
     @property
-    def object_com_ang_acc_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_ACCELERATION, element_names_resolver=body_xyz_resolver)
+    def object_com_ang_acc_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_ang_acc_w` instead."""
         warnings.warn(
             "The `object_com_ang_acc_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -746,7 +849,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_ang_acc_w
 
     @property
-    def object_com_pos_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSITION, element_names_resolver=body_xyz_resolver)
+    def object_com_pos_b(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_pos_b` instead."""
         warnings.warn(
             "The `object_com_pos_b` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -757,7 +861,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_pos_b
 
     @property
-    def object_com_quat_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ROTATION, element_names_resolver=body_quat_resolver)
+    def object_com_quat_b(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_quat_b` instead."""
         warnings.warn(
             "The `object_com_quat_b` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -768,7 +873,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_quat_b
 
     @property
-    def object_link_lin_vel_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_link_lin_vel_b(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_link_lin_vel_b` instead."""
         warnings.warn(
             "The `object_link_lin_vel_b` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -779,7 +885,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_lin_vel_b
 
     @property
-    def object_link_ang_vel_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_link_ang_vel_b(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_link_ang_vel_b` instead."""
         warnings.warn(
             "The `object_link_ang_vel_b` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -790,7 +897,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_ang_vel_b
 
     @property
-    def object_com_lin_vel_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_com_lin_vel_b(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_lin_vel_b` instead."""
         warnings.warn(
             "The `object_com_lin_vel_b` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -801,7 +909,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_lin_vel_b
 
     @property
-    def object_com_ang_vel_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_com_ang_vel_b(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_ang_vel_b` instead."""
         warnings.warn(
             "The `object_com_ang_vel_b` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -812,7 +921,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_ang_vel_b
 
     @property
-    def object_pose_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSE, element_names_resolver=body_pose_resolver)
+    def object_pose_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_link_pose_w` instead."""
         warnings.warn(
             "The `object_pose_w` property will be deprecated in a IsaacLab 4.0. Please use `body_link_pose_w` instead.",
@@ -822,7 +932,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_pose_w
 
     @property
-    def object_pos_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_POSITION, element_names_resolver=body_xyz_resolver)
+    def object_pos_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_link_pos_w` instead."""
         warnings.warn(
             "The `object_pos_w` property will be deprecated in a IsaacLab 4.0. Please use `body_link_pos_w` instead.",
@@ -832,7 +943,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_pos_w
 
     @property
-    def object_quat_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ROTATION, element_names_resolver=body_quat_resolver)
+    def object_quat_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_link_quat_w` instead."""
         warnings.warn(
             "The `object_quat_w` property will be deprecated in a IsaacLab 4.0. Please use `body_link_quat_w` instead.",
@@ -842,7 +954,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_link_quat_w
 
     @property
-    def object_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_VEL, element_names_resolver=body_pose6_resolver)
+    def object_vel_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_vel_w` instead."""
         warnings.warn(
             "The `object_vel_w` property will be deprecated in a IsaacLab 4.0. Please use `body_com_vel_w` instead.",
@@ -852,7 +965,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_vel_w
 
     @property
-    def object_lin_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_lin_vel_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_lin_vel_w` instead."""
         warnings.warn(
             "The `object_lin_vel_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -863,7 +977,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_lin_vel_w
 
     @property
-    def object_ang_vel_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_ang_vel_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_ang_vel_w` instead."""
         warnings.warn(
             "The `object_ang_vel_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -874,7 +989,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_ang_vel_w
 
     @property
-    def object_lin_vel_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_lin_vel_b(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_lin_vel_b` instead."""
         warnings.warn(
             "The `object_lin_vel_b` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -885,7 +1001,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_lin_vel_b
 
     @property
-    def object_ang_vel_b(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_VELOCITY, element_names_resolver=body_xyz_resolver)
+    def object_ang_vel_b(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_ang_vel_b` instead."""
         warnings.warn(
             "The `object_ang_vel_b` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -896,7 +1013,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_ang_vel_b
 
     @property
-    def object_acc_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ACC, element_names_resolver=body_pose6_resolver)
+    def object_acc_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_acc_w` instead."""
         warnings.warn(
             "The `object_acc_w` property will be deprecated in a IsaacLab 4.0. Please use `body_com_acc_w` instead.",
@@ -906,7 +1024,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_acc_w
 
     @property
-    def object_lin_acc_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_LINEAR_ACCELERATION, element_names_resolver=body_xyz_resolver)
+    def object_lin_acc_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_lin_acc_w` instead."""
         warnings.warn(
             "The `object_lin_acc_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -917,7 +1036,8 @@ class BaseRigidObjectCollectionData(ABC):
         return self.body_com_lin_acc_w
 
     @property
-    def object_ang_acc_w(self) -> wp.array:
+    @leapp_tensor_semantics(kind=InputKindEnum.BODY_ANGULAR_ACCELERATION, element_names_resolver=body_xyz_resolver)
+    def object_ang_acc_w(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_com_ang_acc_w` instead."""
         warnings.warn(
             "The `object_ang_acc_w` property will be deprecated in a IsaacLab 4.0. Please use"
@@ -932,7 +1052,8 @@ class BaseRigidObjectCollectionData(ABC):
     """
 
     @property
-    def default_mass(self) -> wp.array:
+    @leapp_tensor_semantics(const=True)
+    def default_mass(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_mass` instead and manage the default mass manually."""
         warnings.warn(
             "The `default_mass` property will be deprecated in a IsaacLab 4.0. Please use `body_mass` instead. "
@@ -941,11 +1062,12 @@ class BaseRigidObjectCollectionData(ABC):
             stacklevel=2,
         )
         if self._default_mass is None:
-            self._default_mass = wp.clone(self.body_mass, self.device)
-        return self._default_mass
+            self._default_mass = wp.clone(self.body_mass.warp, self.device)
+        return ProxyArray(self._default_mass)
 
     @property
-    def default_inertia(self) -> wp.array:
+    @leapp_tensor_semantics(const=True)
+    def default_inertia(self) -> ProxyArray:
         """Deprecated property. Please use :attr:`body_inertia` instead and manage the default inertia manually."""
         warnings.warn(
             "The `default_inertia` property will be deprecated in a IsaacLab 4.0. Please use `body_inertia` instead. "
@@ -954,5 +1076,5 @@ class BaseRigidObjectCollectionData(ABC):
             stacklevel=2,
         )
         if self._default_inertia is None:
-            self._default_inertia = wp.clone(self.body_inertia, self.device)
-        return self._default_inertia
+            self._default_inertia = wp.clone(self.body_inertia.warp, self.device)
+        return ProxyArray(self._default_inertia)
